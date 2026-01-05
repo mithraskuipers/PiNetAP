@@ -156,18 +156,22 @@ class PiNetAP:
             print("   No WiFi interfaces detected!")
             print("   You need at least 1 WiFi interface for AP mode.")
         elif wifi_count == 1:
-            print("\n💡 Single WiFi Setup")
+            print("\n💡 Single WiFi Setup Options")
             print(f"   AP Interface:  {wifi_list[0]} (for hotspot)")
+            
+            print("\n   Option 1: Standalone (No Internet)")
+            print("   Perfect for: File sharing, local services, offline networks")
+            print(f"   sudo pinetap.py install --ssid MyHotspot --password Pass123 \\")
+            print(f"       --ap-interface {wifi_list[0]} --no-share --autoconnect")
+            
             if eth_count > 0:
+                print(f"\n   Option 2: Internet via Ethernet")
                 print(f"   Uplink:        {eth_list[0]} (for internet)")
-                print("\n   Example command:")
                 print(f"   sudo pinetap.py install --ssid MyHotspot --password Pass123 \\")
-                print(f"       --ap-interface {wifi_list[0]}")
+                print(f"       --ap-interface {wifi_list[0]} --autoconnect")
             else:
-                print("   Uplink:        None (standalone mode only)")
-                print("\n   Example command:")
-                print(f"   sudo pinetap.py install --ssid MyHotspot --password Pass123 \\")
-                print(f"       --ap-interface {wifi_list[0]} --no-share")
+                print("\n   Note: No Ethernet detected. Standalone mode only.")
+                print("   Connect clients to access local services on the Pi.")
         else:
             print("\n🎉 Dual WiFi Setup Available!")
             print(f"   AP Interface:  {wifi_list[0]} (for hotspot)")
@@ -175,11 +179,15 @@ class PiNetAP:
             if eth_count > 0:
                 print(f"   Alternative:   {eth_list[0]} (for internet)")
             
-            print("\n   Example command:")
+            print("\n   Option 1: Dual WiFi with Internet")
             print(f"   sudo pinetap.py install --ssid MyHotspot --password Pass123 \\")
             print(f"       --ap-interface {wifi_list[0]} \\")
             print(f"       --uplink-ssid HomeWiFi --uplink-password HomePass \\")
-            print(f"       --uplink-interface {wifi_list[1]}")
+            print(f"       --uplink-interface {wifi_list[1]} --autoconnect")
+            
+            print("\n   Option 2: Standalone (No Internet)")
+            print(f"   sudo pinetap.py install --ssid MyHotspot --password Pass123 \\")
+            print(f"       --ap-interface {wifi_list[0]} --no-share --autoconnect")
         
         print("\n" + "="*70)
     
@@ -779,9 +787,13 @@ Examples:
   # Show available network interfaces
   %(prog)s interfaces
   
+  # Standalone AP (single WiFi, no internet)
+  sudo %(prog)s install --ssid OfflineNetwork --password Pass123 \\
+      --ap-interface wlan0 --no-share --autoconnect
+  
   # Single WiFi + Ethernet setup (internet sharing)
   sudo %(prog)s install --ssid MyHotspot --password Pass123 \\
-      --ap-interface wlan0
+      --ap-interface wlan0 --autoconnect
   
   # Dual WiFi setup (one for AP, one for uplink)
   sudo %(prog)s install --ssid MyHotspot --password Pass123 \\

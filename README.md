@@ -39,7 +39,7 @@ Built for **Raspberry Pi OS Bookworm** using **NetworkManager**.
 ### Check Your Interfaces
 
 ```bash
-python3 pinetap.py interfaces
+python pinetap.py interfaces
 ```
 
 Shows all available interfaces and prints setup recommendations based on detected hardware.
@@ -51,7 +51,7 @@ Shows all available interfaces and prints setup recommendations based on detecte
 **Dual WiFi Setup** (one WiFi for AP, one for internet):
 
 ```bash
-sudo python3 pinetap.py install --ssid MyHotspot --password SecurePass123 \
+sudo python pinetap.py install --ssid MyHotspot --password SecurePass123 \
     --ap-interface wlan1 \
     --uplink-ssid HomeWiFi --uplink-password HomePassword \
     --uplink-interface wlan0 \
@@ -61,7 +61,7 @@ sudo python3 pinetap.py install --ssid MyHotspot --password SecurePass123 \
 **Single WiFi + Ethernet** (WiFi AP, Ethernet internet):
 
 ```bash
-sudo python3 pinetap.py install --ssid MyHotspot --password SecurePass123 \
+sudo python pinetap.py install --ssid MyHotspot --password SecurePass123 \
     --ap-interface wlan0 \
     --autoconnect
 ```
@@ -69,7 +69,7 @@ sudo python3 pinetap.py install --ssid MyHotspot --password SecurePass123 \
 **Standalone AP** (no internet sharing):
 
 ```bash
-sudo python3 pinetap.py install --ssid LocalNetwork --password SecurePass123 \
+sudo python pinetap.py install --ssid LocalNetwork --password SecurePass123 \
     --ap-interface wlan0 --no-share \
     --autoconnect
 ```
@@ -83,8 +83,8 @@ sudo python3 pinetap.py install --ssid LocalNetwork --password SecurePass123 \
 #### List Interfaces
 
 ```bash
-python3 pinetap.py interfaces
-python3 pinetap.py interfaces -d
+python pinetap.py interfaces
+python pinetap.py interfaces -d
 ```
 
 ---
@@ -92,7 +92,7 @@ python3 pinetap.py interfaces -d
 #### Install Access Point
 
 ```bash
-sudo python3 pinetap.py install --ssid NETWORK_NAME --password YOUR_PASSWORD \
+sudo python pinetap.py install --ssid NETWORK_NAME --password YOUR_PASSWORD \
     --ap-interface wlan0 [OPTIONS]
 ```
 
@@ -120,7 +120,7 @@ By default, connections are created but **do not start automatically** on reboot
 Use `--autoconnect` to make the AP persistent.
 
 ```bash
-sudo python3 pinetap.py install --ssid MyHotspot --password Pass123 \
+sudo python pinetap.py install --ssid MyHotspot --password Pass123 \
     --ap-interface wlan0 --autoconnect
 ```
 
@@ -139,7 +139,7 @@ sudo python3 pinetap.py install --ssid MyHotspot --password Pass123 \
 **Verify autoconnect:**
 
 ```bash
-python3 pinetap.py test --type connection --connection MyHotspot-AP
+python pinetap.py test --type connection --connection MyHotspot-AP
 ```
 
 ---
@@ -147,7 +147,7 @@ python3 pinetap.py test --type connection --connection MyHotspot-AP
 ## Remove Access Point
 
 ```bash
-sudo python3 pinetap.py uninstall --connection MyHotspot-AP
+sudo python pinetap.py uninstall --connection MyHotspot-AP
 ```
 
 **Options:**
@@ -160,13 +160,13 @@ sudo python3 pinetap.py uninstall --connection MyHotspot-AP
 #### List NetworkManager Connections
 
 ```bash
-python3 pinetap.py list
+python pinetap.py list
 ```
 
 #### Show Connection Status
 
 ```bash
-python3 pinetap.py status --connection MyHotspot-AP
+python pinetap.py status --connection MyHotspot-AP
 ```
 
 ---
@@ -174,12 +174,12 @@ python3 pinetap.py status --connection MyHotspot-AP
 ## Diagnostic Tests
 
 ```bash
-python3 pinetap.py test --type all
-python3 pinetap.py test --type prerequisites
-python3 pinetap.py test --type config
-python3 pinetap.py test --type connection --connection NAME
-sudo python3 pinetap.py test --type services
-python3 pinetap.py test --type visibility --ssid NAME
+python pinetap.py test --type all
+python pinetap.py test --type prerequisites
+python pinetap.py test --type config
+python pinetap.py test --type connection --connection NAME
+sudo python pinetap.py test --type services
+python pinetap.py test --type visibility --ssid NAME
 ```
 
 ---
@@ -219,28 +219,28 @@ Use cases:
 
 **AP not visible:**
 ```bash
-python3 pinetap.py test --type visibility --ssid YourSSID
+python pinetap.py test --type visibility --ssid YourSSID
 ```
 
 **Clients not getting IP:**
 ```bash
-sudo python3 pinetap.py test --type services
+sudo python pinetap.py test --type services
 ```
 
 **No internet on clients:**
 ```bash
-sudo python3 pinetap.py test --type services
+sudo python pinetap.py test --type services
 ```
 
 **Interface already in use:**
 ```bash
-python3 pinetap.py interfaces -d
+python pinetap.py interfaces -d
 ```
 
 **Clean reset:**
 ```bash
-sudo python3 pinetap.py uninstall --connection YourConnection
-sudo python3 pinetap.py install [options] --test
+sudo python pinetap.py uninstall --connection YourConnection
+sudo python pinetap.py install [options] --test
 ```
 
 ---
@@ -262,7 +262,7 @@ Everything is handled through NetworkManager for stability and compatibility.
 ## Uninstallation
 
 ```bash
-sudo python3 pinetap.py uninstall --connection MyHotspot-AP
+sudo python pinetap.py uninstall --connection MyHotspot-AP
 ```
 
 This:

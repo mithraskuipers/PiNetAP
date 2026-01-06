@@ -5,6 +5,7 @@ Create WiFi hotspots with internet sharing from WiFi/Ethernet uplinks
 
 Fixed: Interface naming stability using MAC address binding
 Enhanced: Security modes, password validation, easier uninstall
+FIXED: --no-share now properly prevents internet sharing
 
 Usage: sudo python pinetap.py [command] [options]
 """
@@ -58,6 +59,8 @@ class PiNetAP:
     PINETAP_CONFIG_DIR = Path("/etc/pinetap")
     INTERFACE_CONFIG = PINETAP_CONFIG_DIR / "interface_mapping.json"
     CONNECTIONS_CONFIG = PINETAP_CONFIG_DIR / "managed_connections.json"
+    DNSMASQ_CONF_DIR = Path("/etc/NetworkManager/dnsmasq.d")
+    AP_DNSMASQ_CONF = DNSMASQ_CONF_DIR / "pinetap-ap.conf"
 
     # Password requirements for different security modes
     PASSWORD_REQUIREMENTS = {
@@ -592,6 +595,67 @@ class PiNetAP:
                 self.log("Re-enabled system dnsmasq service")
         return True
 
+    def setup_standalone_dhcp(self, ap_interface: str, ip_address: str) -> bool:
+        """
+        Configure dnsmasq for DHCP in standalone mode (no internet sharing)
+        This provides DHCP without NAT/routing
+        """
+        try:
+            # Create dnsmasq config directory if it doesn't exist
+            self.DNSMASQ_CONF_DIR.mkdir(parents=True, exist_ok=True)
+            
+            # Parse IP and subnet
+            if '/' in ip_address:
+                ip, prefix = ip_address.split('/')
+                prefix = int(prefix)
+            else:
+                ip = ip_address
+                prefix = 24
+            
+            # Calculate DHCP range (typically .10 to .250)
+            ip_parts = ip.split('.')
+            base_ip = '.'.join(ip_parts[:3])
+            dhcp_start = f"{base_ip}.10"
+            dhcp_end = f"{base_ip}.250"
+            
+            # Create dnsmasq config for this AP
+            dnsmasq_config = f"""# PiNetAP standalone AP configuration
+# Interface: {ap_interface}
+# No internet routing - local network only
+
+interface={ap_interface}
+bind-interfaces
+dhcp-range={dhcp_start},{dhcp_end},12h
+dhcp-option=option:router,{ip}
+dhcp-option=option:dns-server,{ip}
+
+# Don't forward requests to upstream DNS for local-only network
+no-resolv
+# Provide a basic local DNS response
+address=/#/{ip}
+"""
+            
+            self.AP_DNSMASQ_CONF.write_text(dnsmasq_config)
+            self.log(f"Created standalone DHCP config: {self.AP_DNSMASQ_CONF}")
+            self.log(f"DHCP range: {dhcp_start} - {dhcp_end}")
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to setup standalone DHCP: {e}", "ERROR")
+            return False
+
+    def remove_standalone_dhcp(self) -> bool:
+        """Remove standalone DHCP configuration"""
+        try:
+            if self.AP_DNSMASQ_CONF.exists():
+                self.AP_DNSMASQ_CONF.unlink()
+                self.log("Removed standalone DHCP configuration")
+            return True
+        except Exception as e:
+            self.log(f"Failed to remove DHCP config: {e}", "WARN")
+            return False
+
     def reload_networkmanager(self, delay: int = 2):
         self.log("Reloading NetworkManager configuration...")
         self.run_command(["systemctl", "reload", "NetworkManager"], check=False)
@@ -618,6 +682,26 @@ class PiNetAP:
                 self.log(f"Failed to delete connection: {stderr}", "ERROR")
                 return False
         return True
+
+    def clear_iptables_nat_rules(self) -> bool:
+        """Clear all NAT/MASQUERADE rules to prevent internet sharing"""
+        try:
+            # Flush NAT table
+            self.run_command(["iptables", "-t", "nat", "-F"], check=False)
+            self.log("Cleared iptables NAT rules")
+            
+            # Flush filter table FORWARD chain
+            self.run_command(["iptables", "-F", "FORWARD"], check=False)
+            self.log("Cleared iptables FORWARD rules")
+            
+            # Set FORWARD policy to DROP (no forwarding between interfaces)
+            self.run_command(["iptables", "-P", "FORWARD", "DROP"], check=False)
+            self.log("Set FORWARD policy to DROP")
+            
+            return True
+        except Exception as e:
+            self.log(f"Failed to clear iptables rules: {e}", "WARN")
+            return False
 
     def disable_ip_forwarding(self) -> bool:
         """Disable IP forwarding to prevent internet sharing"""
@@ -717,14 +801,22 @@ class PiNetAP:
         self.log(f"⚠ IMPORTANT: Connection will be bound to MAC {ap_mac}", "INFO")
         self.log(f"   Interface name may change after reboot, but connection will follow the hardware", "INFO")
 
-        # Configure IP forwarding based on share_internet setting
+        # Configure IP forwarding and routing based on share_internet setting
         if share_internet:
             self.enable_ip_forwarding()
             ipv4_method = "shared"
+            self.log("Configuring for internet sharing (NAT enabled)", "INFO")
         else:
+            # For standalone mode: disable forwarding and clear any NAT rules
             self.disable_ip_forwarding()
-            # Use shared method for DHCP, but without IP forwarding clients won't get internet
-            ipv4_method = "shared"
+            self.clear_iptables_nat_rules()
+            
+            # Use manual method to prevent NetworkManager from creating NAT rules
+            ipv4_method = "manual"
+            
+            # Setup standalone DHCP configuration
+            self.setup_standalone_dhcp(ap_interface, ip_address)
+            self.log("Configuring for standalone mode (no internet, local DHCP only)", "INFO")
         
         cmd = [
             "nmcli", "con", "add",
@@ -786,13 +878,13 @@ class PiNetAP:
                 (["wifi-sec.psk", password], "Set password"),
             ])
 
-        # For standalone mode, ensure no internet routing
+        # For standalone mode, ensure no internet routing and no default route
         if not share_internet:
             modifications.extend([
-                (["ipv4.route-metric", "100"], "Set route metric"),
-                (["ipv4.never-default", "yes"], "Don't make this the default route"),
+                (["ipv4.route-metric", "9999"], "Set very high route metric (low priority)"),
+                (["ipv4.never-default", "yes"], "Never make this the default route"),
+                (["ipv4.may-fail", "no"], "Connection should succeed even without gateway"),
             ])
-            self.log("Configured for standalone mode (no internet sharing)", "INFO")
 
         for args, description in modifications:
             cmd = ["nmcli", "con", "modify", con_name] + args
@@ -833,6 +925,11 @@ class PiNetAP:
             
             return False
 
+        # For standalone mode, reload NetworkManager to apply dnsmasq config
+        if not share_internet:
+            self.log("Reloading NetworkManager to apply standalone DHCP config...")
+            self.reload_networkmanager(delay=3)
+
         # Verify the connection is actually active
         time.sleep(2)
         ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
@@ -851,9 +948,12 @@ class PiNetAP:
             if not share_internet:
                 self.log(f"  Mode: Standalone (clients can connect but won't have internet)", "INFO")
                 self.log(f"  IP Forwarding: Disabled", "INFO")
+                self.log(f"  NAT/Masquerading: Disabled", "INFO")
+                self.log(f"  DHCP: Enabled (local network only)", "INFO")
             else:
                 self.log(f"  Mode: Internet Sharing Enabled", "INFO")
                 self.log(f"  IP Forwarding: Enabled", "INFO")
+                self.log(f"  NAT/Masquerading: Enabled (via NetworkManager)", "INFO")
             
             # Save connection info for management
             self.save_managed_connection(con_name, ap_interface, ssid, security_mode.value, share_internet)
@@ -876,11 +976,21 @@ class PiNetAP:
     def remove_ap(self, con_name: str, restore_config: bool = True) -> bool:
         self.log(f"Removing access point: {con_name}")
 
+        # Check if this was a standalone AP
+        connections = self.load_managed_connections()
+        was_standalone = False
+        if con_name in connections:
+            was_standalone = not connections[con_name].get('share_internet', True)
+
         if not self.delete_connection(con_name):
             self.log(f"Connection {con_name} not found or failed to delete", "WARN")
         else:
             # Remove from managed connections
             self.remove_managed_connection(con_name)
+
+        # Clean up standalone DHCP config if needed
+        if was_standalone:
+            self.remove_standalone_dhcp()
 
         if restore_config:
             self.restore_nm_config()
@@ -900,11 +1010,18 @@ class PiNetAP:
         
         self.log(f"Removing {len(connections)} managed connection(s)...")
         
+        # Check if any were standalone
+        has_standalone = any(not conn.get('share_internet', True) for conn in connections.values())
+        
         success_count = 0
         for con_name in list(connections.keys()):
             if self.delete_connection(con_name):
                 self.remove_managed_connection(con_name)
                 success_count += 1
+        
+        # Clean up standalone DHCP config if any standalone APs existed
+        if has_standalone:
+            self.remove_standalone_dhcp()
         
         if restore_config:
             self.restore_nm_config()
@@ -1121,6 +1238,17 @@ class PiNetAP:
         except Exception:
             print("   ? Cannot check")
         
+        # Check for NAT rules
+        print("\n🔧 NAT/Masquerading Status:")
+        ret, stdout, _ = self.run_command(["iptables", "-t", "nat", "-L", "-n"], check=False)
+        if ret == 0:
+            if "MASQUERADE" in stdout:
+                print("   ✓ NAT rules present (internet sharing enabled)")
+            else:
+                print("   ✗ No NAT rules (standalone mode or not configured)")
+        else:
+            print("   ? Cannot check (requires root)")
+        
         # Check rfkill
         print("\n📻 RF Kill Status:")
         ret, stdout, _ = self.run_command(["rfkill", "list"], check=False)
@@ -1143,6 +1271,10 @@ class PiNetAP:
                     break
             if not dnsmasq_found:
                 print("   ⚠️  dnsmasq not detected")
+        
+        # Check for standalone DHCP config
+        if self.AP_DNSMASQ_CONF.exists():
+            print(f"   ✓ Standalone DHCP config exists: {self.AP_DNSMASQ_CONF}")
         
         # Check system journal for errors
         print("\n📝 Recent Logs:")
@@ -1396,10 +1528,10 @@ class PiNetAP:
             with open("/proc/sys/net/ipv4/ip_forward", "r") as f:
                 value = f.read().strip()
             if value == "1":
-                return TestResult("IP Forwarding", TestStatus.PASS, "Enabled")
+                return TestResult("IP Forwarding", TestStatus.PASS, "Enabled (internet sharing on)")
             else:
-                return TestResult("IP Forwarding", TestStatus.WARN, 
-                                "Disabled (may be needed for internet sharing)")
+                return TestResult("IP Forwarding", TestStatus.PASS, 
+                                "Disabled (standalone/no-share mode)")
         except Exception as e:
             return TestResult("IP Forwarding", TestStatus.FAIL, f"Cannot check: {e}")
 
@@ -1410,10 +1542,10 @@ class PiNetAP:
                             "Cannot check iptables (requires root)")
 
         if "MASQUERADE" in stdout or "POSTROUTING" in stdout:
-            return TestResult("Firewall Rules", TestStatus.PASS, "NAT rules detected")
+            return TestResult("Firewall Rules", TestStatus.PASS, "NAT rules detected (internet sharing)")
         else:
-            return TestResult("Firewall Rules", TestStatus.WARN, 
-                            "No NAT rules found (needed for internet sharing)")
+            return TestResult("Firewall Rules", TestStatus.PASS, 
+                            "No NAT rules (standalone mode or not configured)")
 
     def test_ap_visibility(self, ssid: str, timeout: int = 5) -> TestResult:
         self.log(f"Scanning for SSID '{ssid}' (this may take {timeout} seconds)...", "DEBUG")
@@ -1503,7 +1635,7 @@ class PiNetAP:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="PiNetAP - Dual WiFi Access Point Manager for Raspberry Pi (Enhanced)",
+        description="PiNetAP - Dual WiFi Access Point Manager for Raspberry Pi (Enhanced - Fixed --no-share)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1548,6 +1680,7 @@ Note:
   - Your AP will continue working regardless of name changes
   - Password requirements: WPA2/WPA3 require 8-63 characters
   - Open networks should not have a password
+  - --no-share properly disables internet sharing (IP forwarding + NAT disabled)
 """
     )
 
@@ -1585,7 +1718,7 @@ Note:
                                help="Enable autoconnect on boot")
     install_parser.add_argument("--connection", help="AP connection name (default: SSID-AP)")
     install_parser.add_argument("--no-share", action="store_true",
-                               help="Don't share internet (standalone AP)")
+                               help="Don't share internet (standalone AP - disables NAT and IP forwarding)")
     install_parser.add_argument("--test", action="store_true",
                                help="Run tests after installation")
 

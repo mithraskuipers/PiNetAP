@@ -61,6 +61,7 @@ class PiNetAP:
     CONNECTIONS_CONFIG = PINETAP_CONFIG_DIR / "managed_connections.json"
     DNSMASQ_CONF_DIR = Path("/etc/NetworkManager/dnsmasq.d")
     AP_DNSMASQ_CONF = DNSMASQ_CONF_DIR / "pinetap-ap.conf"
+    SYSTEM_STATE_CONFIG = PINETAP_CONFIG_DIR / "original_state.json"
 
     # Password requirements for different security modes
     PASSWORD_REQUIREMENTS = {
@@ -686,22 +687,140 @@ address=/#/{ip}
     def clear_iptables_nat_rules(self) -> bool:
         """Clear all NAT/MASQUERADE rules to prevent internet sharing"""
         try:
+            # Check if iptables exists
+            ret, _, _ = self.run_command(["which", "iptables"], check=False)
+            if ret != 0:
+                self.log("iptables not found - using nftables or iptables not installed", "WARN")
+                self.log("Internet isolation relies on disabled IP forwarding only", "WARN")
+                return True
+            
             # Flush NAT table
-            self.run_command(["iptables", "-t", "nat", "-F"], check=False)
-            self.log("Cleared iptables NAT rules")
+            ret, _, stderr = self.run_command(["iptables", "-t", "nat", "-F"], check=False)
+            if ret == 0:
+                self.log("Cleared iptables NAT rules")
+            else:
+                self.log(f"Could not clear NAT rules: {stderr}", "WARN")
             
             # Flush filter table FORWARD chain
-            self.run_command(["iptables", "-F", "FORWARD"], check=False)
-            self.log("Cleared iptables FORWARD rules")
+            ret, _, stderr = self.run_command(["iptables", "-F", "FORWARD"], check=False)
+            if ret == 0:
+                self.log("Cleared iptables FORWARD rules")
             
             # Set FORWARD policy to DROP (no forwarding between interfaces)
-            self.run_command(["iptables", "-P", "FORWARD", "DROP"], check=False)
-            self.log("Set FORWARD policy to DROP")
+            ret, _, stderr = self.run_command(["iptables", "-P", "FORWARD", "DROP"], check=False)
+            if ret == 0:
+                self.log("Set FORWARD policy to DROP")
+            
+            # Add explicit DROP rules for traffic from AP interface
+            # This blocks forwarding even if IP forwarding is somehow enabled
+            ret, _, stderr = self.run_command([
+                "iptables", "-I", "FORWARD", "1", "-j", "DROP"
+            ], check=False)
+            if ret == 0:
+                self.log("Added FORWARD DROP rule to block all forwarding")
             
             return True
         except Exception as e:
-            self.log(f"Failed to clear iptables rules: {e}", "WARN")
+            self.log(f"Failed to configure iptables: {e}", "WARN")
+            self.log("Internet isolation relies on disabled IP forwarding only", "WARN")
             return False
+
+    def save_original_system_state(self):
+        """Save original system state before making changes"""
+        if self.SYSTEM_STATE_CONFIG.exists():
+            # Already saved, don't overwrite
+            return
+        
+        state = {}
+        
+        # Save IP forwarding state
+        try:
+            with open("/proc/sys/net/ipv4/ip_forward", "r") as f:
+                state['ip_forward'] = int(f.read().strip())
+        except Exception:
+            state['ip_forward'] = 0
+        
+        # Save iptables FORWARD policy
+        try:
+            ret, stdout, _ = self.run_command(["iptables", "-L", "FORWARD", "-n"], check=False)
+            if ret == 0:
+                for line in stdout.split('\n'):
+                    if line.startswith('Chain FORWARD'):
+                        if 'policy ACCEPT' in line:
+                            state['forward_policy'] = 'ACCEPT'
+                        elif 'policy DROP' in line:
+                            state['forward_policy'] = 'DROP'
+                        else:
+                            state['forward_policy'] = 'ACCEPT'
+                        break
+                else:
+                    state['forward_policy'] = 'ACCEPT'
+            else:
+                state['forward_policy'] = None  # iptables not available
+        except Exception:
+            state['forward_policy'] = None
+        
+        # Save timestamp
+        state['saved_at'] = time.time()
+        
+        self.PINETAP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.SYSTEM_STATE_CONFIG.write_text(json.dumps(state, indent=2))
+        self.log(f"Saved original system state")
+
+    def restore_original_system_state(self):
+        """Restore system to original state"""
+        if not self.SYSTEM_STATE_CONFIG.exists():
+            self.log("No saved system state found, using safe defaults", "WARN")
+            # Use safe defaults
+            self.enable_ip_forwarding()  # Most systems have this enabled by default
+            self.restore_iptables_policy('ACCEPT')
+            return
+        
+        try:
+            state = json.loads(self.SYSTEM_STATE_CONFIG.read_text())
+            
+            # Restore IP forwarding
+            if state.get('ip_forward') == 1:
+                self.enable_ip_forwarding()
+                self.log("Restored IP forwarding: enabled")
+            else:
+                self.disable_ip_forwarding()
+                self.log("Restored IP forwarding: disabled")
+            
+            # Restore iptables FORWARD policy
+            if state.get('forward_policy'):
+                self.restore_iptables_policy(state['forward_policy'])
+                self.log(f"Restored iptables FORWARD policy: {state['forward_policy']}")
+            
+            # Remove state file
+            self.SYSTEM_STATE_CONFIG.unlink()
+            self.log("Removed system state backup")
+            
+        except Exception as e:
+            self.log(f"Failed to restore system state: {e}", "ERROR")
+            self.log("Using safe defaults instead", "WARN")
+            self.enable_ip_forwarding()
+            self.restore_iptables_policy('ACCEPT')
+
+    def restore_iptables_policy(self, policy: str = 'ACCEPT'):
+        """Restore iptables FORWARD policy"""
+        try:
+            ret, _, _ = self.run_command(["which", "iptables"], check=False)
+            if ret != 0:
+                return  # iptables not available
+            
+            # Flush FORWARD chain to remove our rules
+            self.run_command(["iptables", "-F", "FORWARD"], check=False)
+            
+            # Flush NAT table
+            self.run_command(["iptables", "-t", "nat", "-F"], check=False)
+            
+            # Set policy
+            self.run_command(["iptables", "-P", "FORWARD", policy], check=False)
+            self.log(f"iptables FORWARD policy set to {policy}")
+            
+        except Exception as e:
+            self.log(f"Could not restore iptables: {e}", "WARN")
 
     def disable_ip_forwarding(self) -> bool:
         """Disable IP forwarding to prevent internet sharing"""
@@ -807,16 +926,14 @@ address=/#/{ip}
             ipv4_method = "shared"
             self.log("Configuring for internet sharing (NAT enabled)", "INFO")
         else:
-            # For standalone mode: disable forwarding and clear any NAT rules
+            # For standalone mode: disable forwarding and block all forwarding in firewall
             self.disable_ip_forwarding()
             self.clear_iptables_nat_rules()
             
-            # Use manual method to prevent NetworkManager from creating NAT rules
-            ipv4_method = "manual"
-            
-            # Setup standalone DHCP configuration
-            self.setup_standalone_dhcp(ap_interface, ip_address)
-            self.log("Configuring for standalone mode (no internet, local DHCP only)", "INFO")
+            # Use shared method for DHCP, but with IP forwarding disabled and iptables DROP rules
+            # Clients will get IPs but won't be able to access internet
+            ipv4_method = "shared"
+            self.log("Configuring for standalone mode (no internet, local network only)", "INFO")
         
         cmd = [
             "nmcli", "con", "add",
@@ -925,13 +1042,14 @@ address=/#/{ip}
             
             return False
 
-        # For standalone mode, reload NetworkManager to apply dnsmasq config
-        if not share_internet:
-            self.log("Reloading NetworkManager to apply standalone DHCP config...")
-            self.reload_networkmanager(delay=3)
-
         # Verify the connection is actually active
         time.sleep(2)
+        
+        # For standalone mode, ensure NAT is blocked even after NetworkManager activation
+        if not share_internet:
+            self.log("Re-applying firewall rules to prevent internet sharing...")
+            self.clear_iptables_nat_rules()
+        
         ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
         if ret == 0 and con_name in stdout:
             autoconnect_msg = " (will reconnect on reboot)" if autoconnect else ""
@@ -982,6 +1100,13 @@ address=/#/{ip}
         if con_name in connections:
             was_standalone = not connections[con_name].get('share_internet', True)
 
+        # Disconnect the connection first if it's active
+        ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
+        if ret == 0 and con_name in stdout:
+            self.log(f"Disconnecting active connection: {con_name}")
+            self.run_command(["nmcli", "con", "down", con_name], check=False)
+            time.sleep(1)
+
         if not self.delete_connection(con_name):
             self.log(f"Connection {con_name} not found or failed to delete", "WARN")
         else:
@@ -993,14 +1118,31 @@ address=/#/{ip}
             self.remove_standalone_dhcp()
 
         if restore_config:
-            self.restore_nm_config()
-            self.manage_dnsmasq_service("enable")
-            self.reload_networkmanager()
+            # Check if this is the last connection
+            remaining = self.load_managed_connections()
+            if not remaining:
+                # Last connection - restore everything
+                self.log("Last PiNetAP connection removed, restoring system state...")
+                self.restore_original_system_state()
+                self.restore_nm_config()
+                self.manage_dnsmasq_service("enable")
+                self.reload_networkmanager()
+                
+                # Clean up config directory
+                if self.PINETAP_CONFIG_DIR.exists():
+                    try:
+                        import shutil
+                        shutil.rmtree(self.PINETAP_CONFIG_DIR)
+                        self.log("Removed PiNetAP configuration directory")
+                    except Exception as e:
+                        self.log(f"Could not remove config directory: {e}", "WARN")
+            else:
+                self.log(f"{len(remaining)} connection(s) remaining, keeping system configuration")
 
         self.log("Access point removed successfully!", "SUCCESS")
         return True
 
-    def remove_all_managed_aps(self, restore_config: bool = True) -> bool:
+    def remove_all_managed_aps(self, restore_config: bool = True, force: bool = False) -> bool:
         """Remove all PiNetAP-managed connections"""
         connections = self.load_managed_connections()
         
@@ -1008,35 +1150,107 @@ address=/#/{ip}
             self.log("No managed connections to remove", "INFO")
             return True
         
-        self.log(f"Removing {len(connections)} managed connection(s)...")
+        # Show what will be removed
+        print("\n" + "="*70)
+        print("⚠️  UNINSTALL ALL PINETAP ACCESS POINTS")
+        print("="*70)
+        print(f"\nThe following {len(connections)} connection(s) will be removed:")
+        for con_name, info in connections.items():
+            ssid = info.get('ssid', 'N/A')
+            interface = info.get('interface', 'N/A')
+            mode = "Standalone" if not info.get('share_internet', True) else "Internet Sharing"
+            print(f"  • {con_name}")
+            print(f"    SSID: {ssid}, Interface: {interface}, Mode: {mode}")
+        
+        print("\nThe following will also be cleaned up:")
+        print("  • Network configuration restored to original state")
+        print("  • IP forwarding restored to original setting")
+        print("  • iptables rules removed")
+        print("  • PiNetAP configuration directory removed")
+        
+        # Ask for confirmation unless forced
+        if not force:
+            print("\n" + "-"*70)
+            response = input("Continue with uninstall? [y/N]: ").strip().lower()
+            if response not in ['y', 'yes']:
+                print("Uninstall cancelled.")
+                return False
+        
+        print("\n" + "="*70)
+        print("REMOVING ACCESS POINTS...")
+        print("="*70)
         
         # Check if any were standalone
         has_standalone = any(not conn.get('share_internet', True) for conn in connections.values())
         
         success_count = 0
         for con_name in list(connections.keys()):
+            print(f"\n[{success_count + 1}/{len(connections)}] Removing {con_name}...")
+            
+            # Disconnect if active
+            ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
+            if ret == 0 and con_name in stdout:
+                self.log(f"  Disconnecting active connection")
+                self.run_command(["nmcli", "con", "down", con_name], check=False)
+                time.sleep(1)
+            
             if self.delete_connection(con_name):
                 self.remove_managed_connection(con_name)
                 success_count += 1
+                print(f"  ✓ Removed")
+            else:
+                print(f"  ✗ Failed to remove")
         
         # Clean up standalone DHCP config if any standalone APs existed
         if has_standalone:
+            print("\nCleaning up standalone DHCP configuration...")
             self.remove_standalone_dhcp()
         
         if restore_config:
+            print("\nRestoring system configuration...")
+            
+            # Restore system state
+            print("  • Restoring IP forwarding and firewall rules...")
+            self.restore_original_system_state()
+            
+            # Restore NetworkManager config
+            print("  • Restoring NetworkManager configuration...")
             self.restore_nm_config()
+            
+            # Re-enable dnsmasq
+            print("  • Re-enabling dnsmasq service...")
             self.manage_dnsmasq_service("enable")
+            
+            # Reload NetworkManager
+            print("  • Reloading NetworkManager...")
             self.reload_networkmanager()
         
         # Clean up interface mapping if it exists
         if self.INTERFACE_CONFIG.exists():
             try:
                 self.INTERFACE_CONFIG.unlink()
-                self.log("Removed interface mapping configuration")
+                print("  • Removed interface mapping")
             except Exception as e:
                 self.log(f"Failed to remove interface mapping: {e}", "WARN")
         
-        self.log(f"Successfully removed {success_count}/{len(connections)} connection(s)!", "SUCCESS")
+        # Clean up entire config directory
+        if self.PINETAP_CONFIG_DIR.exists():
+            try:
+                import shutil
+                shutil.rmtree(self.PINETAP_CONFIG_DIR)
+                print("  • Removed PiNetAP configuration directory")
+            except Exception as e:
+                self.log(f"Could not remove config directory: {e}", "WARN")
+        
+        print("\n" + "="*70)
+        if success_count == len(connections):
+            print(f"✅ Successfully removed all {success_count} connection(s)!")
+            print("\nYour system has been restored to its original state.")
+        else:
+            print(f"⚠️  Removed {success_count}/{len(connections)} connection(s)")
+            print("Some connections could not be removed.")
+        print("="*70)
+        
         return success_count == len(connections)
 
     def list_connections(self):
@@ -1730,6 +1944,8 @@ Note:
                                  help="Remove all PiNetAP-managed connections")
     uninstall_parser.add_argument("--keep-config", action="store_true",
                                  help="Keep NetworkManager configuration changes")
+    uninstall_parser.add_argument("--force", action="store_true",
+                                 help="Skip confirmation prompt (for scripts)")
 
     # List command
     subparsers.add_parser("list", help="List all NetworkManager connections")
@@ -1847,6 +2063,9 @@ Note:
             if not success:
                 manager.log("Failed to connect to uplink. Continuing with AP creation...", "WARN")
 
+        # Save original system state before making changes
+        manager.save_original_system_state()
+
         # Configure NetworkManager
         manager.backup_nm_config()
         manager.modify_nm_config(add_dnsmasq=True)
@@ -1898,7 +2117,10 @@ Note:
 
     elif args.command == "uninstall":
         if args.all:
-            success = manager.remove_all_managed_aps(restore_config=not args.keep_config)
+            success = manager.remove_all_managed_aps(
+                restore_config=not args.keep_config,
+                force=args.force
+            )
         elif args.connection:
             success = manager.remove_ap(
                 con_name=args.connection,

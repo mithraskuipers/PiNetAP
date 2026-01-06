@@ -62,6 +62,12 @@ class PiNetAP:
     DNSMASQ_CONF_DIR = Path("/etc/NetworkManager/dnsmasq.d")
     AP_DNSMASQ_CONF = DNSMASQ_CONF_DIR / "pinetap-ap.conf"
     SYSTEM_STATE_CONFIG = PINETAP_CONFIG_DIR / "original_state.json"
+    
+    # Captive portal paths
+    CAPTIVE_PORTAL_DIR = Path("/var/www/pinetap-portal")
+    CAPTIVE_PORTAL_HTML = CAPTIVE_PORTAL_DIR / "index.html"
+    CAPTIVE_PORTAL_SERVICE = Path("/etc/systemd/system/pinetap-portal.service")
+    CAPTIVE_PORTAL_SCRIPT = PINETAP_CONFIG_DIR / "portal_server.py"
 
     # Password requirements for different security modes
     PASSWORD_REQUIREMENTS = {
@@ -109,6 +115,650 @@ class PiNetAP:
         ret, _, _ = self.run_command(["systemctl", "is-active", "NetworkManager"], check=False)
         return ret == 0
 
+    def get_captive_portal_html(self, ap_ip: str, ssid: str, services: Optional[List[Dict]] = None) -> str:
+        """Generate captive portal HTML page"""
+        
+        # Default services if none provided
+        if not services:
+            services = [
+                {"name": "Router Admin", "port": 80, "path": "/", "description": "Web interface"},
+            ]
+        
+        service_cards = ""
+        for svc in services:
+            port_display = f":{svc['port']}" if svc['port'] != 80 else ""
+            url = f"http://{ap_ip}{port_display}{svc.get('path', '/')}"
+            service_cards += f"""
+                <div class="service-card">
+                    <h3>{svc['name']}</h3>
+                    <p>{svc.get('description', '')}</p>
+                    <a href="{url}" class="service-link">{url}</a>
+                </div>
+            """
+        
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to {ssid}</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }}
+        
+        .container {{
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+            animation: slideUp 0.5s ease;
+        }}
+        
+        @keyframes slideUp {{
+            from {{
+                opacity: 0;
+                transform: translateY(30px);
+            }}
+            to {{
+                opacity: 1;
+                transform: translateY(0);
+            }}
+        }}
+        
+        .header {{
+            text-align: center;
+            margin-bottom: 30px;
+        }}
+        
+        .wifi-icon {{
+            font-size: 64px;
+            margin-bottom: 10px;
+        }}
+        
+        h1 {{
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }}
+        
+        .ssid {{
+            color: #667eea;
+            font-weight: bold;
+        }}
+        
+        .welcome-text {{
+            color: #666;
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+            text-align: center;
+        }}
+        
+        .ip-box {{
+            background: #f7f9fc;
+            border: 2px solid #e1e8ed;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: center;
+        }}
+        
+        .ip-label {{
+            color: #888;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }}
+        
+        .ip-address {{
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+            font-family: 'Courier New', monospace;
+        }}
+        
+        .services {{
+            margin-top: 20px;
+        }}
+        
+        .services h2 {{
+            color: #333;
+            font-size: 20px;
+            margin-bottom: 15px;
+            text-align: center;
+        }}
+        
+        .service-card {{
+            background: #f7f9fc;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 15px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        
+        .service-card:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+        }}
+        
+        .service-card h3 {{
+            color: #333;
+            font-size: 18px;
+            margin-bottom: 8px;
+        }}
+        
+        .service-card p {{
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }}
+        
+        .service-link {{
+            display: inline-block;
+            color: #667eea;
+            text-decoration: none;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            padding: 8px 16px;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #667eea;
+            transition: all 0.2s;
+        }}
+        
+        .service-link:hover {{
+            background: #667eea;
+            color: white;
+        }}
+        
+        .footer {{
+            text-align: center;
+            color: #999;
+            font-size: 12px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e1e8ed;
+        }}
+        
+        .status-indicator {{
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #4ade80;
+            border-radius: 50%;
+            margin-right: 6px;
+            animation: pulse 2s infinite;
+        }}
+        
+        @keyframes pulse {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.5; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="wifi-icon">📡</div>
+            <h1>Welcome to <span class="ssid">{ssid}</span></h1>
+        </div>
+        
+        <p class="welcome-text">
+            <span class="status-indicator"></span>
+            You're connected! This network provides access to local services.
+        </p>
+        
+        <div class="ip-box">
+            <div class="ip-label">Router IP Address</div>
+            <div class="ip-address">{ap_ip}</div>
+        </div>
+        
+        <div class="services">
+            <h2>📦 Available Services</h2>
+            {service_cards}
+        </div>
+        
+        <div class="footer">
+            <p>Powered by PiNetAP</p>
+            <p>Use the IP address above to access services on this network</p>
+        </div>
+    </div>
+</body>
+</html>"""
+        return html
+
+    def get_portal_server_script(self, portal_dir: str, ap_ip: str, port: int = 80) -> str:
+        """Generate Python HTTP server script for captive portal"""
+        script = f'''#!/usr/bin/env python3
+"""
+PiNetAP Captive Portal Server
+Lightweight HTTP server for captive portal functionality
+"""
+
+import http.server
+import socketserver
+import os
+import sys
+from pathlib import Path
+
+class PortalHandler(http.server.SimpleHTTPRequestHandler):
+    """Custom handler to serve portal and handle all requests"""
+    
+    def do_GET(self):
+        """Handle all GET requests"""
+        # Common captive portal detection URLs
+        captive_urls = [
+            '/generate_204',  # Android
+            '/gen_204',       # Android
+            '/hotspot-detect.html',  # iOS/macOS
+            '/library/test/success.html',  # iOS/macOS
+            '/ncsi.txt',      # Windows
+            '/connecttest.txt',  # Windows
+            '/redirect',      # Various
+            '/success.txt',   # Various
+        ]
+        
+        # If it's a captive portal detection, redirect to index
+        if self.path in captive_urls:
+            self.send_response(302)
+            self.send_header('Location', f'http://{ap_ip}/')
+            self.end_headers()
+            return
+        
+        # Serve index.html for root or redirect everything else to root
+        if self.path == '/' or self.path == '/index.html':
+            self.path = '/index.html'
+            return http.server.SimpleHTTPRequestHandler.do_GET(self)
+        else:
+            # Redirect everything else to the portal
+            self.send_response(302)
+            self.send_header('Location', f'http://{ap_ip}/')
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        """Log to syslog instead of stderr"""
+        pass  # Quiet mode for systemd
+
+def main():
+    os.chdir('{portal_dir}')
+    
+    with socketserver.TCPServer(("{ap_ip}", {port}), PortalHandler) as httpd:
+        print(f"Captive portal serving on http://{ap_ip}:{port}")
+        httpd.serve_forever()
+
+if __name__ == '__main__':
+    main()
+'''
+        return script
+
+    def setup_captive_portal(self, ap_ip: str, ssid: str, services: Optional[List[Dict]] = None, port: int = 80) -> bool:
+        """Generate captive portal HTML page"""
+        
+        # Default services if none provided
+        if not services:
+            services = [
+                {"name": "Router Admin", "port": 80, "path": "/", "description": "Web interface"},
+            ]
+        
+        service_cards = ""
+        for svc in services:
+            port_display = f":{svc['port']}" if svc['port'] != 80 else ""
+            url = f"http://{ap_ip}{port_display}{svc.get('path', '/')}"
+            service_cards += f"""
+                <div class="service-card">
+                    <h3>{svc['name']}</h3>
+                    <p>{svc.get('description', '')}</p>
+                    <a href="{url}" class="service-link">{url}</a>
+                </div>
+            """
+        
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to {ssid}</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }}
+        
+        .container {{
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+            animation: slideUp 0.5s ease;
+        }}
+        
+        @keyframes slideUp {{
+            from {{
+                opacity: 0;
+                transform: translateY(30px);
+            }}
+            to {{
+                opacity: 1;
+                transform: translateY(0);
+            }}
+        }}
+        
+        .header {{
+            text-align: center;
+            margin-bottom: 30px;
+        }}
+        
+        .wifi-icon {{
+            font-size: 64px;
+            margin-bottom: 10px;
+        }}
+        
+        h1 {{
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }}
+        
+        .ssid {{
+            color: #667eea;
+            font-weight: bold;
+        }}
+        
+        .welcome-text {{
+            color: #666;
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+            text-align: center;
+        }}
+        
+        .ip-box {{
+            background: #f7f9fc;
+            border: 2px solid #e1e8ed;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: center;
+        }}
+        
+        .ip-label {{
+            color: #888;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }}
+        
+        .ip-address {{
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+            font-family: 'Courier New', monospace;
+        }}
+        
+        .services {{
+            margin-top: 20px;
+        }}
+        
+        .services h2 {{
+            color: #333;
+            font-size: 20px;
+            margin-bottom: 15px;
+            text-align: center;
+        }}
+        
+        .service-card {{
+            background: #f7f9fc;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 15px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        
+        .service-card:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+        }}
+        
+        .service-card h3 {{
+            color: #333;
+            font-size: 18px;
+            margin-bottom: 8px;
+        }}
+        
+        .service-card p {{
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }}
+        
+        .service-link {{
+            display: inline-block;
+            color: #667eea;
+            text-decoration: none;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            padding: 8px 16px;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #667eea;
+            transition: all 0.2s;
+        }}
+        
+        .service-link:hover {{
+            background: #667eea;
+            color: white;
+        }}
+        
+        .footer {{
+            text-align: center;
+            color: #999;
+            font-size: 12px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e1e8ed;
+        }}
+        
+        .status-indicator {{
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #4ade80;
+            border-radius: 50%;
+            margin-right: 6px;
+            animation: pulse 2s infinite;
+        }}
+        
+        @keyframes pulse {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.5; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="wifi-icon">📡</div>
+            <h1>Welcome to <span class="ssid">{ssid}</span></h1>
+        </div>
+        
+        <p class="welcome-text">
+            <span class="status-indicator"></span>
+            You're connected! This network provides access to local services.
+        </p>
+        
+        <div class="ip-box">
+            <div class="ip-label">Router IP Address</div>
+            <div class="ip-address">{ap_ip}</div>
+        </div>
+        
+        <div class="services">
+            <h2>📦 Available Services</h2>
+            {service_cards}
+        </div>
+        
+        <div class="footer">
+            <p>Powered by PiNetAP</p>
+            <p>Use the IP address above to access services on this network</p>
+        </div>
+    </div>
+</body>
+</html>"""
+        return html
+
+    def setup_captive_portal(self, ap_ip: str, ssid: str, services: Optional[List[Dict]] = None, port: int = 80) -> bool:
+        """Setup captive portal web server and systemd service"""
+        try:
+            self.log("Setting up captive portal...")
+            
+            # Create portal directory
+            self.CAPTIVE_PORTAL_DIR.mkdir(parents=True, exist_ok=True)
+            
+            # Generate and write HTML
+            html_content = self.get_captive_portal_html(ap_ip, ssid, services)
+            self.CAPTIVE_PORTAL_HTML.write_text(html_content)
+            self.log(f"Created portal page: {self.CAPTIVE_PORTAL_HTML}")
+            
+            # Generate and write server script
+            server_script = self.get_portal_server_script(str(self.CAPTIVE_PORTAL_DIR), ap_ip, port)
+            self.CAPTIVE_PORTAL_SCRIPT.write_text(server_script)
+            self.CAPTIVE_PORTAL_SCRIPT.chmod(0o755)
+            self.log(f"Created portal server: {self.CAPTIVE_PORTAL_SCRIPT}")
+            
+            # Create systemd service
+            service_content = f"""[Unit]
+Description=PiNetAP Captive Portal
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 {self.CAPTIVE_PORTAL_SCRIPT}
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
+"""
+            self.CAPTIVE_PORTAL_SERVICE.write_text(service_content)
+            self.log(f"Created systemd service: {self.CAPTIVE_PORTAL_SERVICE}")
+            
+            # Reload systemd and start service
+            self.run_command(["systemctl", "daemon-reload"], check=False)
+            self.run_command(["systemctl", "enable", "pinetap-portal"], check=False)
+            self.run_command(["systemctl", "restart", "pinetap-portal"], check=False)
+            
+            # Wait and check if service started
+            time.sleep(2)
+            ret, _, _ = self.run_command(["systemctl", "is-active", "pinetap-portal"], check=False)
+            if ret == 0:
+                self.log(f"✓ Captive portal running at http://{ap_ip}:{port}", "SUCCESS")
+                return True
+            else:
+                self.log("Failed to start captive portal service", "ERROR")
+                return False
+                
+        except Exception as e:
+            self.log(f"Failed to setup captive portal: {e}", "ERROR")
+            return False
+
+    def remove_captive_portal(self) -> bool:
+        """Remove captive portal files and service"""
+        try:
+            self.log("Removing captive portal...")
+            
+            # Stop and disable service
+            self.run_command(["systemctl", "stop", "pinetap-portal"], check=False)
+            self.run_command(["systemctl", "disable", "pinetap-portal"], check=False)
+            
+            # Remove service file
+            if self.CAPTIVE_PORTAL_SERVICE.exists():
+                self.CAPTIVE_PORTAL_SERVICE.unlink()
+                self.log("Removed portal service")
+            
+            # Remove portal directory
+            if self.CAPTIVE_PORTAL_DIR.exists():
+                import shutil
+                shutil.rmtree(self.CAPTIVE_PORTAL_DIR)
+                self.log("Removed portal directory")
+            
+            # Remove server script
+            if self.CAPTIVE_PORTAL_SCRIPT.exists():
+                self.CAPTIVE_PORTAL_SCRIPT.unlink()
+                self.log("Removed portal script")
+            
+            # Reload systemd
+            self.run_command(["systemctl", "daemon-reload"], check=False)
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to remove captive portal: {e}", "WARN")
+            return False
+
+    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
+        """Configure dnsmasq to redirect all DNS queries to AP IP for captive portal"""
+        try:
+            # This configuration makes all DNS queries return the AP IP
+            # Works with the existing dnsmasq setup
+            captive_dns_conf = f"""# PiNetAP Captive Portal DNS Configuration
+# Redirect all DNS queries to the AP for captive portal detection
+
+# For interface {ap_interface}
+interface={ap_interface}
+bind-interfaces
+
+# Return AP IP for all queries (captive portal)
+address=/#/{ap_ip}
+
+# Captive portal detection URLs
+address=/captive.apple.com/{ap_ip}
+address=/connectivitycheck.gstatic.com/{ap_ip}
+address=/www.msftconnecttest.com/{ap_ip}
+address=/detectportal.firefox.com/{ap_ip}
+"""
+            
+            # Write to dnsmasq config
+            captive_dns_file = self.DNSMASQ_CONF_DIR / "pinetap-captive.conf"
+            self.DNSMASQ_CONF_DIR.mkdir(parents=True, exist_ok=True)
+            captive_dns_file.write_text(captive_dns_conf)
+            
+            self.log("Configured captive portal DNS")
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to configure captive portal DNS: {e}", "ERROR")
+            return False
+
     def validate_password(self, password: Optional[str], security_mode: SecurityMode) -> Tuple[bool, str]:
         """
         Validate password based on security mode requirements
@@ -138,7 +788,7 @@ class PiNetAP:
         return True, ""
 
     def save_managed_connection(self, con_name: str, ap_interface: str, ssid: str, 
-                               security_mode: str, share_internet: bool):
+                               security_mode: str, share_internet: bool, captive_portal: bool = False):
         """Save information about managed connections for easy uninstall"""
         connections = self.load_managed_connections()
         
@@ -147,6 +797,7 @@ class PiNetAP:
             'interface': ap_interface,
             'security_mode': security_mode,
             'share_internet': share_internet,
+            'captive_portal': captive_portal,
             'created': time.time(),
             'last_modified': time.time()
         }
@@ -879,7 +1530,9 @@ address=/#/{ip}
         autoconnect: bool,
         con_name: Optional[str],
         share_internet: bool = True,
-        security_mode: SecurityMode = SecurityMode.WPA2_PSK
+        security_mode: SecurityMode = SecurityMode.WPA2_PSK,
+        captive_portal: bool = False,
+        portal_services: Optional[List[Dict]] = None
     ) -> bool:
         available, msg, existing_conn = self.check_interface_available(ap_interface, for_ap=True, allow_reconnect=True)
         
@@ -1074,7 +1727,23 @@ address=/#/{ip}
                 self.log(f"  NAT/Masquerading: Enabled (via NetworkManager)", "INFO")
             
             # Save connection info for management
-            self.save_managed_connection(con_name, ap_interface, ssid, security_mode.value, share_internet)
+            self.save_managed_connection(con_name, ap_interface, ssid, security_mode.value, share_internet, captive_portal)
+            
+            # Setup captive portal if requested
+            if captive_portal:
+                self.log("\n📱 Setting up captive portal...")
+                
+                # Configure DNS for captive portal
+                self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0])
+                
+                # Reload NetworkManager to apply DNS changes
+                self.reload_networkmanager(delay=2)
+                
+                # Setup and start captive portal web server
+                if self.setup_captive_portal(ip_address.split('/')[0], ssid, portal_services):
+                    self.log(f"✓ Captive portal active! Connect to see welcome page", "SUCCESS")
+                else:
+                    self.log(f"⚠ Captive portal setup failed, AP still works without it", "WARN")
             
             # Verify SSID is being broadcast
             self.log("\n⏳ Waiting 3 seconds then verifying SSID broadcast...", "INFO")
@@ -1094,11 +1763,13 @@ address=/#/{ip}
     def remove_ap(self, con_name: str, restore_config: bool = True) -> bool:
         self.log(f"Removing access point: {con_name}")
 
-        # Check if this was a standalone AP
+        # Check if this was a standalone AP or had captive portal
         connections = self.load_managed_connections()
         was_standalone = False
+        had_captive_portal = False
         if con_name in connections:
             was_standalone = not connections[con_name].get('share_internet', True)
+            had_captive_portal = connections[con_name].get('captive_portal', False)
 
         # Disconnect the connection first if it's active
         ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
@@ -1123,6 +1794,11 @@ address=/#/{ip}
             if not remaining:
                 # Last connection - restore everything
                 self.log("Last PiNetAP connection removed, restoring system state...")
+                
+                # Remove captive portal if it was enabled
+                if had_captive_portal or any(c.get('captive_portal', False) for c in connections.values()):
+                    self.remove_captive_portal()
+                
                 self.restore_original_system_state()
                 self.restore_nm_config()
                 self.manage_dnsmasq_service("enable")
@@ -1166,6 +1842,7 @@ address=/#/{ip}
         print("  • Network configuration restored to original state")
         print("  • IP forwarding restored to original setting")
         print("  • iptables rules removed")
+        print("  • Captive portal removed (if enabled)")
         print("  • PiNetAP configuration directory removed")
         
         # Ask for confirmation unless forced
@@ -1205,6 +1882,12 @@ address=/#/{ip}
         if has_standalone:
             print("\nCleaning up standalone DHCP configuration...")
             self.remove_standalone_dhcp()
+        
+        # Check if any connection had captive portal
+        has_captive_portal = any(conn.get('captive_portal', False) for conn in connections.values())
+        if has_captive_portal:
+            print("\nRemoving captive portal...")
+            self.remove_captive_portal()
         
         if restore_config:
             print("\nRestoring system configuration...")
@@ -1878,6 +2561,22 @@ Examples:
   sudo python pinetap.py install --ssid SecureAP --password Pass12345 \\
        --security wpa3-sae --ap-interface wlan0 --autoconnect
 
+  # Standalone AP with Captive Portal (perfect for self-hosted services)
+  sudo python pinetap.py install --ssid MyServices --password Pass12345 \\
+       --security wpa2-psk --ap-interface wlan0 --no-share --autoconnect \\
+       --captive-portal
+
+  # Captive Portal with custom services (create services.json file)
+  # Example services.json:
+  # [
+  #   {"name": "Home Assistant", "port": 8123, "path": "/", "description": "Home automation"},
+  #   {"name": "Plex Media", "port": 32400, "path": "/web", "description": "Media server"},
+  #   {"name": "Pi-hole", "port": 80, "path": "/admin", "description": "Ad blocker"}
+  # ]
+  sudo python pinetap.py install --ssid MyServices --password Pass12345 \\
+       --security wpa2-psk --ap-interface wlan0 --no-share --autoconnect \\
+       --captive-portal --portal-services services.json
+
   # List all managed connections
   sudo python pinetap.py managed
 
@@ -1895,6 +2594,7 @@ Note:
   - Password requirements: WPA2/WPA3 require 8-63 characters
   - Open networks should not have a password
   - --no-share properly disables internet sharing (IP forwarding + NAT disabled)
+  - Captive portal shows router IP and custom services automatically on connect
 """
     )
 
@@ -1933,6 +2633,10 @@ Note:
     install_parser.add_argument("--connection", help="AP connection name (default: SSID-AP)")
     install_parser.add_argument("--no-share", action="store_true",
                                help="Don't share internet (standalone AP - disables NAT and IP forwarding)")
+    install_parser.add_argument("--captive-portal", action="store_true",
+                               help="Enable captive portal (shows welcome page when connecting)")
+    install_parser.add_argument("--portal-services", type=str,
+                               help="JSON file with services to show in portal (see docs)")
     install_parser.add_argument("--test", action="store_true",
                                help="Run tests after installation")
 
@@ -2072,6 +2776,17 @@ Note:
         manager.manage_dnsmasq_service("disable")
         manager.reload_networkmanager()
 
+        # Load portal services if provided
+        portal_services = None
+        if args.portal_services:
+            try:
+                with open(args.portal_services, 'r') as f:
+                    portal_services = json.load(f)
+                manager.log(f"Loaded {len(portal_services)} service(s) for captive portal")
+            except Exception as e:
+                manager.log(f"Failed to load portal services: {e}", "WARN")
+                manager.log("Using default services", "INFO")
+
         # Create the AP
         success = manager.create_ap(
             ssid=args.ssid,
@@ -2083,7 +2798,9 @@ Note:
             autoconnect=args.autoconnect,
             con_name=args.connection,
             share_internet=not args.no_share,
-            security_mode=security_mode
+            security_mode=security_mode,
+            captive_portal=args.captive_portal,
+            portal_services=portal_services
         )
 
         if success:

@@ -407,256 +407,224 @@ if __name__ == '__main__':
 '''
         return script
 
-    def setup_captive_portal(self, ap_ip: str, ssid: str, services: Optional[List[Dict]] = None, port: int = 80) -> bool:
-        """Generate captive portal HTML page"""
-        
-        # Default services if none provided
-        if not services:
-            services = [
-                {"name": "Router Admin", "port": 80, "path": "/", "description": "Web interface"},
-            ]
-        
-        service_cards = ""
-        for svc in services:
-            port_display = f":{svc['port']}" if svc['port'] != 80 else ""
-            url = f"http://{ap_ip}{port_display}{svc.get('path', '/')}"
-            service_cards += f"""
-                <div class="service-card">
-                    <h3>{svc['name']}</h3>
-                    <p>{svc.get('description', '')}</p>
-                    <a href="{url}" class="service-link">{url}</a>
-                </div>
-            """
-        
-        html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Welcome to {ssid}</title>
-    <style>
-        * {{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-        
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }}
-        
-        .container {{
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            max-width: 600px;
-            width: 100%;
-            padding: 40px;
-            animation: slideUp 0.5s ease;
-        }}
-        
-        @keyframes slideUp {{
-            from {{
-                opacity: 0;
-                transform: translateY(30px);
-            }}
-            to {{
-                opacity: 1;
-                transform: translateY(0);
-            }}
-        }}
-        
-        .header {{
-            text-align: center;
-            margin-bottom: 30px;
-        }}
-        
-        .wifi-icon {{
-            font-size: 64px;
-            margin-bottom: 10px;
-        }}
-        
-        h1 {{
-            color: #333;
-            font-size: 28px;
-            margin-bottom: 10px;
-        }}
-        
-        .ssid {{
-            color: #667eea;
-            font-weight: bold;
-        }}
-        
-        .welcome-text {{
-            color: #666;
-            font-size: 16px;
-            line-height: 1.6;
-            margin-bottom: 30px;
-            text-align: center;
-        }}
-        
-        .ip-box {{
-            background: #f7f9fc;
-            border: 2px solid #e1e8ed;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 30px;
-            text-align: center;
-        }}
-        
-        .ip-label {{
-            color: #888;
-            font-size: 14px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 8px;
-        }}
-        
-        .ip-address {{
-            font-size: 32px;
-            font-weight: bold;
-            color: #667eea;
-            font-family: 'Courier New', monospace;
-        }}
-        
-        .services {{
-            margin-top: 20px;
-        }}
-        
-        .services h2 {{
-            color: #333;
-            font-size: 20px;
-            margin-bottom: 15px;
-            text-align: center;
-        }}
-        
-        .service-card {{
-            background: #f7f9fc;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 15px;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }}
-        
-        .service-card:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
-        }}
-        
-        .service-card h3 {{
-            color: #333;
-            font-size: 18px;
-            margin-bottom: 8px;
-        }}
-        
-        .service-card p {{
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 12px;
-        }}
-        
-        .service-link {{
-            display: inline-block;
-            color: #667eea;
-            text-decoration: none;
-            font-family: 'Courier New', monospace;
-            font-size: 14px;
-            padding: 8px 16px;
-            background: white;
-            border-radius: 6px;
-            border: 1px solid #667eea;
-            transition: all 0.2s;
-        }}
-        
-        .service-link:hover {{
-            background: #667eea;
-            color: white;
-        }}
-        
-        .footer {{
-            text-align: center;
-            color: #999;
-            font-size: 12px;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #e1e8ed;
-        }}
-        
-        .status-indicator {{
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            background: #4ade80;
-            border-radius: 50%;
-            margin-right: 6px;
-            animation: pulse 2s infinite;
-        }}
-        
-        @keyframes pulse {{
-            0%, 100% {{ opacity: 1; }}
-            50% {{ opacity: 0.5; }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="wifi-icon">📡</div>
-            <h1>Welcome to <span class="ssid">{ssid}</span></h1>
-        </div>
-        
-        <p class="welcome-text">
-            <span class="status-indicator"></span>
-            You're connected! This network provides access to local services.
-        </p>
-        
-        <div class="ip-box">
-            <div class="ip-label">Router IP Address</div>
-            <div class="ip-address">{ap_ip}</div>
-        </div>
-        
-        <div class="services">
-            <h2>📦 Available Services</h2>
-            {service_cards}
-        </div>
-        
-        <div class="footer">
-            <p>Powered by PiNetAP</p>
-            <p>Use the IP address above to access services on this network</p>
-        </div>
-    </div>
-</body>
-</html>"""
-        return html
-
-    def setup_captive_portal(self, ap_ip: str, ssid: str, services: Optional[List[Dict]] = None, port: int = 80) -> bool:
-        """Setup captive portal web server and systemd service"""
+    def setup_captive_portal(self, ap_ip: str, ssid: str, ap_interface: str, services: Optional[List[Dict]] = None, port: int = 80) -> bool:
+        """Setup captive portal using lightweight Python HTTP server with iptables interception"""
         try:
             self.log("Setting up captive portal...")
+            
+            # Use the lightweight offline solution - works perfectly without dependencies
+            return self._setup_offline_captive_portal(ap_ip, ssid, ap_interface, services, port)
+                
+        except Exception as e:
+            self.log(f"Failed to setup captive portal: {e}", "ERROR")
+            return False
+
+# Gateway name and redirect URL
+GatewayName {ssid}
+GatewayAddress {ap_ip}
+
+# Splash page settings
+SplashPage {splash_page}
+
+# Client authentication
+# 0 = No authentication (just click through)
+AuthenticateImmediately yes
+PreAuthIdleTimeout 10
+AuthIdleTimeout 120
+
+# Firewall settings
+# Allow all traffic after splash (no bandwidth restrictions)
+FirewallRuleSet authenticated-users {{
+    FirewallRule allow all
+}}
+
+# Allow DNS and DHCP before authentication
+FirewallRuleSet preauthenticated-users {{
+    FirewallRule allow tcp port 53
+    FirewallRule allow udp port 53
+    FirewallRule allow udp port 67
+    FirewallRule allow tcp port {port}
+}}
+
+# Users-to-router (allow access to splash page)
+FirewallRuleSet users-to-router {{
+    FirewallRule allow tcp port {port}
+    FirewallRule allow udp port 53
+}}
+
+# Don't check for internet connectivity
+CheckInterval 0
+
+# Redirect to splash page
+RedirectURL http://{ap_ip}/splash.html
+
+# MAC mechanism
+MACMechanism block
+
+# Increase max clients
+MaxClients 250
+
+# Daemon settings
+Daemon 1
+PidFile /var/run/nodogsplash.pid
+"""
+            
+            nds_config_file = Path("/etc/nodogsplash/nodogsplash.conf")
+            nds_config_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Backup original config if it exists
+            if nds_config_file.exists():
+                backup = Path("/etc/nodogsplash/nodogsplash.conf.backup")
+                if not backup.exists():
+                    import shutil
+                    shutil.copy2(nds_config_file, backup)
+            
+            nds_config_file.write_text(nds_config)
+            self.log(f"Created nodogsplash config: {nds_config_file}")
+            
+            # Stop any existing nodogsplash
+            self.run_command(["systemctl", "stop", "nodogsplash"], check=False)
+            self.run_command(["killall", "nodogsplash"], check=False)
+            time.sleep(2)
+            
+            # Enable and start nodogsplash
+            self.run_command(["systemctl", "enable", "nodogsplash"], check=False)
+            self.run_command(["systemctl", "start", "nodogsplash"], check=False)
+            
+            # Wait and check if service started
+            time.sleep(3)
+            ret, _, _ = self.run_command(["systemctl", "is-active", "nodogsplash"], check=False)
+            if ret == 0:
+                self.log(f"✓ Captive portal (nodogsplash) running!", "SUCCESS")
+                self.log(f"  Splash page will show automatically when clients connect", "INFO")
+                return True
+            else:
+                self.log("Failed to start nodogsplash service", "ERROR")
+                # Try to get error details
+                ret2, stdout2, _ = self.run_command(["systemctl", "status", "nodogsplash"], check=False)
+                if stdout2:
+                    self.log(f"Status: {stdout2}", "DEBUG")
+                return False
+                
+        except Exception as e:
+            self.log(f"Failed to setup captive portal: {e}", "ERROR")
+            return False
+
+    def _setup_offline_captive_portal(self, ap_ip: str, ssid: str, ap_interface: str, services: Optional[List[Dict]] = None, port: int = 80) -> bool:
+        """Setup offline captive portal using Python HTTP server - works without internet"""
+        try:
+            self.log("Setting up offline captive portal (no nodogsplash needed)...")
             
             # Create portal directory
             self.CAPTIVE_PORTAL_DIR.mkdir(parents=True, exist_ok=True)
             
-            # Generate and write HTML
+            # Generate splash page HTML
             html_content = self.get_captive_portal_html(ap_ip, ssid, services)
-            self.CAPTIVE_PORTAL_HTML.write_text(html_content)
-            self.log(f"Created portal page: {self.CAPTIVE_PORTAL_HTML}")
+            splash_page = self.CAPTIVE_PORTAL_DIR / "splash.html"
+            splash_page.write_text(html_content)
+            self.log(f"Created splash page: {splash_page}")
             
-            # Generate and write server script
-            server_script = self.get_portal_server_script(str(self.CAPTIVE_PORTAL_DIR), ap_ip, port)
+            # Create captive portal server with proper detection
+            server_script = f'''#!/usr/bin/env python3
+"""
+Offline Captive Portal Server - Works without internet
+Handles captive portal detection for iOS, Android, Windows, macOS
+"""
+
+import http.server
+import socketserver
+import os
+from urllib.parse import urlparse
+
+class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
+    """Handle captive portal detection and splash page"""
+    
+    def do_GET(self):
+        """Handle GET requests with proper captive portal detection"""
+        parsed = urlparse(self.path)
+        path = parsed.path
+        
+        # Captive portal detection endpoints
+        detection_endpoints = {{
+            # iOS/macOS
+            '/hotspot-detect.html': 'apple',
+            '/library/test/success.html': 'apple',
+            # Android  
+            '/generate_204': 'android',
+            '/gen_204': 'android',
+            # Windows
+            '/ncsi.txt': 'windows',
+            '/connecttest.txt': 'windows',
+            # Firefox/others
+            '/success.txt': 'firefox',
+            '/canonical.html': 'ubuntu',
+        }}
+        
+        # Check if it's a detection endpoint
+        if path in detection_endpoints:
+            platform = detection_endpoints[path]
+            
+            if platform == 'android':
+                # Android expects HTTP 204, we redirect to trigger portal
+                self.send_response(302)
+                self.send_header('Location', 'http://{ap_ip}/splash.html')
+                self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                self.end_headers()
+                return
+                
+            elif platform == 'apple':
+                # iOS expects specific "Success" HTML, we modify it to trigger portal
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                self.end_headers()
+                # Non-standard response triggers portal
+                html = '<HTML><HEAD><TITLE>Captive Portal</TITLE></HEAD><BODY>Login Required</BODY></HTML>'
+                self.wfile.write(html.encode())
+                return
+                
+            elif platform == 'windows':
+                # Windows expects "Microsoft NCSI", we give different text
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain')
+                self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                self.end_headers()
+                self.wfile.write(b'Captive Portal Active')
+                return
+        
+        # Serve splash page
+        if path == '/' or path == '/splash.html':
+            self.path = '/splash.html'
+            return http.server.SimpleHTTPRequestHandler.do_GET(self)
+        
+        # Redirect everything else to splash
+        self.send_response(302)
+        self.send_header('Location', 'http://{ap_ip}/splash.html')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+    
+    def log_message(self, format, *args):
+        """Suppress log spam"""
+        pass
+
+def main():
+    os.chdir('{self.CAPTIVE_PORTAL_DIR}')
+    
+    with socketserver.TCPServer(("{ap_ip}", {port}), CaptivePortalHandler) as httpd:
+        print(f"Offline Captive Portal running on {ap_ip}:{port}")
+        httpd.serve_forever()
+
+if __name__ == '__main__':
+    main()
+'''
+            
             self.CAPTIVE_PORTAL_SCRIPT.write_text(server_script)
             self.CAPTIVE_PORTAL_SCRIPT.chmod(0o755)
             self.log(f"Created portal server: {self.CAPTIVE_PORTAL_SCRIPT}")
             
             # Create systemd service
             service_content = f"""[Unit]
-Description=PiNetAP Captive Portal
+Description=PiNetAP Offline Captive Portal
 After=network.target
 
 [Service]
@@ -672,6 +640,9 @@ WantedBy=multi-user.target
             self.CAPTIVE_PORTAL_SERVICE.write_text(service_content)
             self.log(f"Created systemd service: {self.CAPTIVE_PORTAL_SERVICE}")
             
+            # Configure DNS for captive portal detection
+            self._configure_offline_dns(ap_interface, ap_ip)
+            
             # Reload systemd and start service
             self.run_command(["systemctl", "daemon-reload"], check=False)
             self.run_command(["systemctl", "enable", "pinetap-portal"], check=False)
@@ -681,29 +652,221 @@ WantedBy=multi-user.target
             time.sleep(2)
             ret, _, _ = self.run_command(["systemctl", "is-active", "pinetap-portal"], check=False)
             if ret == 0:
-                self.log(f"✓ Captive portal running at http://{ap_ip}:{port}", "SUCCESS")
+                self.log(f"✓ Offline captive portal running at http://{ap_ip}:{port}", "SUCCESS")
+                self.log(f"  Portal uses detection tricks to trigger automatic popup", "INFO")
+                self.log(f"  Tip: Forget & reconnect WiFi on your device for best results", "INFO")
                 return True
             else:
                 self.log("Failed to start captive portal service", "ERROR")
+                ret2, stdout2, _ = self.run_command(["systemctl", "status", "pinetap-portal"], check=False)
+                if stdout2:
+                    self.log(f"Status: {stdout2}", "DEBUG")
                 return False
                 
         except Exception as e:
-            self.log(f"Failed to setup captive portal: {e}", "ERROR")
+            self.log(f"Failed to setup offline captive portal: {e}", "ERROR")
+            return False
+
+    def _configure_offline_dns(self, ap_interface: str, ap_ip: str) -> bool:
+        """Configure DNS for offline captive portal detection"""
+        try:
+            # Aggressive DNS configuration for captive portal detection
+            captive_dns_conf = f"""# PiNetAP Offline Captive Portal DNS
+# Redirects all queries to trigger captive portal detection
+
+# Interface binding
+interface={ap_interface}
+bind-dynamic
+
+# Return AP IP for everything (captive portal)
+address=/#/{ap_ip}
+
+# Specific detection domains (for reliability)
+address=/captive.apple.com/{ap_ip}
+address=/connectivitycheck.android.com/{ap_ip}
+address=/connectivitycheck.gstatic.com/{ap_ip}
+address=/clients3.google.com/{ap_ip}
+address=/www.msftconnecttest.com/{ap_ip}
+address=/www.msftncsi.com/{ap_ip}
+address=/ipv6.msftconnecttest.com/{ap_ip}
+address=/detectportal.firefox.com/{ap_ip}
+
+# Disable upstream DNS
+no-resolv
+
+# No caching for immediate responses
+cache-size=0
+
+# Log queries for debugging
+log-queries
+"""
+            
+            captive_dns_file = self.DNSMASQ_CONF_DIR / "pinetap-captive.conf"
+            self.DNSMASQ_CONF_DIR.mkdir(parents=True, exist_ok=True)
+            captive_dns_file.write_text(captive_dns_conf)
+            
+            self.log("Configured DNS for offline captive portal detection")
+            
+            # Configure iptables to intercept HTTP traffic
+            self._setup_captive_portal_iptables(ap_interface, ap_ip)
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to configure DNS: {e}", "ERROR")
+            return False
+
+    def _setup_captive_portal_iptables(self, ap_interface: str, ap_ip: str) -> bool:
+        """Setup iptables rules to intercept and redirect HTTP traffic to captive portal"""
+        try:
+            self.log("Setting up HTTP traffic interception for captive portal...")
+            
+            # Check if iptables exists
+            ret, _, _ = self.run_command(["which", "iptables"], check=False)
+            if ret != 0:
+                self.log("iptables not found, captive portal may not trigger automatically", "WARN")
+                return False
+            
+            # Flush any existing nat PREROUTING rules for this interface
+            self.run_command([
+                "iptables", "-t", "nat", "-D", "PREROUTING",
+                "-i", ap_interface, "-p", "tcp", "--dport", "80",
+                "-j", "DNAT", "--to-destination", f"{ap_ip}:80"
+            ], check=False)
+            
+            # Add PREROUTING rule to intercept HTTP (port 80) and redirect to portal
+            # This is the KEY to making captive portals work!
+            ret, _, stderr = self.run_command([
+                "iptables", "-t", "nat", "-A", "PREROUTING",
+                "-i", ap_interface, "-p", "tcp", "--dport", "80",
+                "-j", "DNAT", "--to-destination", f"{ap_ip}:80"
+            ], check=False)
+            
+            if ret == 0:
+                self.log(f"✓ HTTP traffic on {ap_interface}:80 will redirect to {ap_ip}:80")
+            else:
+                self.log(f"Failed to add HTTP redirect rule: {stderr}", "WARN")
+                return False
+            
+            # Also redirect HTTPS attempts (port 443) - show HTTP portal page
+            # This handles secure captive portal detection
+            self.run_command([
+                "iptables", "-t", "nat", "-D", "PREROUTING",
+                "-i", ap_interface, "-p", "tcp", "--dport", "443",
+                "-j", "DNAT", "--to-destination", f"{ap_ip}:80"
+            ], check=False)
+            
+            ret, _, stderr = self.run_command([
+                "iptables", "-t", "nat", "-A", "PREROUTING",
+                "-i", ap_interface, "-p", "tcp", "--dport", "443",
+                "-j", "DNAT", "--to-destination", f"{ap_ip}:80"
+            ], check=False)
+            
+            if ret == 0:
+                self.log(f"✓ HTTPS traffic on {ap_interface}:443 will redirect to {ap_ip}:80")
+            else:
+                self.log(f"Warning: Could not add HTTPS redirect rule: {stderr}", "WARN")
+            
+            # Allow traffic to the portal itself (don't redirect portal to portal)
+            self.run_command([
+                "iptables", "-t", "nat", "-I", "PREROUTING", "1",
+                "-i", ap_interface, "-p", "tcp", "-d", ap_ip, "--dport", "80",
+                "-j", "ACCEPT"
+            ], check=False)
+            
+            self.log("✓ HTTP traffic interception configured", "SUCCESS")
+            self.log("  All HTTP requests will redirect to captive portal", "INFO")
+            
+            # Save iptables rules to persist across reboots
+            self._save_iptables_rules()
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to setup iptables: {e}", "ERROR")
+            return False
+
+    def _save_iptables_rules(self) -> bool:
+        """Save iptables rules to persist across reboots"""
+        try:
+            # Check if iptables-persistent is installed
+            ret, _, _ = self.run_command(["which", "iptables-save"], check=False)
+            if ret != 0:
+                self.log("iptables-save not found, rules won't persist across reboots", "WARN")
+                return False
+            
+            # Save current iptables rules
+            rules_file = Path("/etc/pinetap/iptables-captive.rules")
+            self.PINETAP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            
+            ret, stdout, _ = self.run_command(["iptables-save"], check=False)
+            if ret == 0 and stdout:
+                rules_file.write_text(stdout)
+                self.log(f"Saved iptables rules to {rules_file}")
+                
+                # Create a restore script
+                restore_script = self.PINETAP_CONFIG_DIR / "restore-iptables.sh"
+                restore_script.write_text(f"""#!/bin/bash
+# Restore PiNetAP captive portal iptables rules
+iptables-restore < {rules_file}
+""")
+                restore_script.chmod(0o755)
+                
+                # Add to rc.local for persistence (if it exists)
+                rc_local = Path("/etc/rc.local")
+                if rc_local.exists():
+                    content = rc_local.read_text()
+                    restore_line = f"{restore_script}\n"
+                    if restore_line not in content:
+                        # Insert before 'exit 0' if it exists
+                        if 'exit 0' in content:
+                            content = content.replace('exit 0', f'{restore_line}exit 0')
+                        else:
+                            content += f"\n{restore_line}"
+                        rc_local.write_text(content)
+                        self.log("Added iptables restore to /etc/rc.local")
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to save iptables rules: {e}", "WARN")
             return False
 
     def remove_captive_portal(self) -> bool:
-        """Remove captive portal files and service"""
+        """Remove captive portal (nodogsplash or offline) files and service"""
         try:
             self.log("Removing captive portal...")
             
-            # Stop and disable service
+            # Stop and disable nodogsplash
+            self.run_command(["systemctl", "stop", "nodogsplash"], check=False)
+            self.run_command(["systemctl", "disable", "nodogsplash"], check=False)
+            self.run_command(["killall", "nodogsplash"], check=False)
+            
+            # Stop and disable offline portal service
             self.run_command(["systemctl", "stop", "pinetap-portal"], check=False)
             self.run_command(["systemctl", "disable", "pinetap-portal"], check=False)
             
-            # Remove service file
-            if self.CAPTIVE_PORTAL_SERVICE.exists():
-                self.CAPTIVE_PORTAL_SERVICE.unlink()
-                self.log("Removed portal service")
+            # Remove iptables HTTP redirect rules
+            self._remove_captive_portal_iptables()
+            
+            # Restore original config if backup exists
+            nds_config = Path("/etc/nodogsplash/nodogsplash.conf")
+            nds_backup = Path("/etc/nodogsplash/nodogsplash.conf.backup")
+            
+            if nds_backup.exists():
+                import shutil
+                shutil.copy2(nds_backup, nds_config)
+                nds_backup.unlink()
+                self.log("Restored original nodogsplash config")
+            elif nds_config.exists():
+                nds_config.unlink()
+                self.log("Removed nodogsplash config")
+            
+            # Remove DNS config
+            captive_dns_file = self.DNSMASQ_CONF_DIR / "pinetap-captive.conf"
+            if captive_dns_file.exists():
+                captive_dns_file.unlink()
+                self.log("Removed captive portal DNS config")
             
             # Remove portal directory
             if self.CAPTIVE_PORTAL_DIR.exists():
@@ -711,53 +874,77 @@ WantedBy=multi-user.target
                 shutil.rmtree(self.CAPTIVE_PORTAL_DIR)
                 self.log("Removed portal directory")
             
-            # Remove server script
+            # Remove old systemd service if it exists
+            if self.CAPTIVE_PORTAL_SERVICE.exists():
+                self.CAPTIVE_PORTAL_SERVICE.unlink()
+            
+            # Remove old script if it exists
             if self.CAPTIVE_PORTAL_SCRIPT.exists():
                 self.CAPTIVE_PORTAL_SCRIPT.unlink()
-                self.log("Removed portal script")
+            
+            # Remove saved iptables rules
+            rules_file = Path("/etc/pinetap/iptables-captive.rules")
+            if rules_file.exists():
+                rules_file.unlink()
             
             # Reload systemd
             self.run_command(["systemctl", "daemon-reload"], check=False)
             
+            self.log("✓ Captive portal removed", "SUCCESS")
             return True
             
         except Exception as e:
             self.log(f"Failed to remove captive portal: {e}", "WARN")
             return False
 
-    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
-        """Configure dnsmasq to redirect all DNS queries to AP IP for captive portal"""
+    def _remove_captive_portal_iptables(self) -> bool:
+        """Remove iptables HTTP redirect rules"""
         try:
-            # This configuration makes all DNS queries return the AP IP
-            # Works with the existing dnsmasq setup
-            captive_dns_conf = f"""# PiNetAP Captive Portal DNS Configuration
-# Redirect all DNS queries to the AP for captive portal detection
-
-# For interface {ap_interface}
-interface={ap_interface}
-bind-interfaces
-
-# Return AP IP for all queries (captive portal)
-address=/#/{ap_ip}
-
-# Captive portal detection URLs
-address=/captive.apple.com/{ap_ip}
-address=/connectivitycheck.gstatic.com/{ap_ip}
-address=/www.msftconnecttest.com/{ap_ip}
-address=/detectportal.firefox.com/{ap_ip}
-"""
+            ret, _, _ = self.run_command(["which", "iptables"], check=False)
+            if ret != 0:
+                return True  # iptables not available, nothing to clean
             
-            # Write to dnsmasq config
-            captive_dns_file = self.DNSMASQ_CONF_DIR / "pinetap-captive.conf"
-            self.DNSMASQ_CONF_DIR.mkdir(parents=True, exist_ok=True)
-            captive_dns_file.write_text(captive_dns_conf)
+            self.log("Removing HTTP redirect iptables rules...")
             
-            self.log("Configured captive portal DNS")
+            # Get all interfaces that might have had captive portal
+            interfaces = self.get_available_interfaces()
+            wifi_interfaces = [name for name, info in interfaces.items() if info['type'] == 'wifi']
+            
+            # Try to remove rules for each interface
+            for iface in wifi_interfaces:
+                # Remove HTTP redirect (port 80)
+                self.run_command([
+                    "iptables", "-t", "nat", "-D", "PREROUTING",
+                    "-i", iface, "-p", "tcp", "--dport", "80",
+                    "-j", "DNAT", "--to-destination", "192.168.4.1:80"
+                ], check=False)
+                
+                # Remove HTTPS redirect (port 443)
+                self.run_command([
+                    "iptables", "-t", "nat", "-D", "PREROUTING",
+                    "-i", iface, "-p", "tcp", "--dport", "443",
+                    "-j", "DNAT", "--to-destination", "192.168.4.1:80"
+                ], check=False)
+                
+                # Remove ACCEPT rule for portal itself
+                self.run_command([
+                    "iptables", "-t", "nat", "-D", "PREROUTING",
+                    "-i", iface, "-p", "tcp", "-d", "192.168.4.1", "--dport", "80",
+                    "-j", "ACCEPT"
+                ], check=False)
+            
+            self.log("Cleaned up iptables redirect rules")
             return True
             
         except Exception as e:
-            self.log(f"Failed to configure captive portal DNS: {e}", "ERROR")
+            self.log(f"Failed to remove iptables rules: {e}", "WARN")
             return False
+
+    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
+        """Configure DNS for captive portal - nodogsplash handles this automatically"""
+        # nodogsplash handles DNS redirection internally, no need for dnsmasq config
+        self.log("DNS redirection will be handled by nodogsplash")
+        return True
 
     def validate_password(self, password: Optional[str], security_mode: SecurityMode) -> Tuple[bool, str]:
         """
@@ -1740,7 +1927,7 @@ address=/#/{ip}
                 self.reload_networkmanager(delay=2)
                 
                 # Setup and start captive portal web server
-                if self.setup_captive_portal(ip_address.split('/')[0], ssid, portal_services):
+                if self.setup_captive_portal(ip_address.split('/')[0], ssid, ap_interface, portal_services):
                     self.log(f"✓ Captive portal active! Connect to see welcome page", "SUCCESS")
                 else:
                     self.log(f"⚠ Captive portal setup failed, AP still works without it", "WARN")

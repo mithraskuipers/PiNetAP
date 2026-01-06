@@ -1,0 +1,20 @@
+[
+  {
+    "name": "Pi Admin Page",
+    "port": 80,
+    "path": "/",
+    "description": "Raspberry Pi administration"
+  },
+  {
+    "name": "File Server",
+    "port": 8000,
+    "path": "/",
+    "description": "Access shared files"
+  },
+  {
+    "name": "Web Application",
+    "port": 3000,
+    "path": "/",
+    "description": "Custom web app"
+  }
+]

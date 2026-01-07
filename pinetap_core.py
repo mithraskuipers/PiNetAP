@@ -50,7 +50,7 @@ class TestResult:
 
 class PiNetAPCore:
     """Core configuration and utility methods for PiNetAP"""
-    
+
     NM_CONFIG_PATH = Path("/etc/NetworkManager/NetworkManager.conf")
     NM_CONFIG_BACKUP = Path("/etc/NetworkManager/NetworkManager.conf.backup")
     PINETAP_CONFIG_DIR = Path("/etc/pinetap")
@@ -59,7 +59,7 @@ class PiNetAPCore:
     DNSMASQ_CONF_DIR = Path("/etc/NetworkManager/dnsmasq.d")
     AP_DNSMASQ_CONF = DNSMASQ_CONF_DIR / "pinetap-ap.conf"
     SYSTEM_STATE_CONFIG = PINETAP_CONFIG_DIR / "original_state.json"
-    
+
     # Captive portal paths
     CAPTIVE_PORTAL_DIR = Path("/var/www/pinetap-portal")
     CAPTIVE_PORTAL_HTML = CAPTIVE_PORTAL_DIR / "index.html"
@@ -121,31 +121,31 @@ class PiNetAPCore:
             if password:
                 return False, "Open network should not have a password. Remove --password or choose a different security mode."
             return True, ""
-        
+
         if not password:
             return False, f"{security_mode.value} requires a password. Please provide --password."
-        
+
         requirements = self.PASSWORD_REQUIREMENTS.get(security_mode)
         if not requirements:
             return True, ""
-        
+
         min_len = requirements['min_length']
         max_len = requirements['max_length']
-        
+
         if len(password) < min_len:
             return False, f"Password too short. {requirements['description']} (current length: {len(password)})"
-        
+
         if len(password) > max_len:
             return False, f"Password too long. {requirements['description']} (current length: {len(password)})"
-        
+
         return True, ""
 
     # Connection Management
-    def save_managed_connection(self, con_name: str, ap_interface: str, ssid: str, 
+    def save_managed_connection(self, con_name: str, ap_interface: str, ssid: str,
                                security_mode: str, share_internet: bool, captive_portal: bool = False):
         """Save information about managed connections for easy uninstall"""
         connections = self.load_managed_connections()
-        
+
         connections[con_name] = {
             'ssid': ssid,
             'interface': ap_interface,
@@ -155,7 +155,7 @@ class PiNetAPCore:
             'created': time.time(),
             'last_modified': time.time()
         }
-        
+
         self.PINETAP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         self.CONNECTIONS_CONFIG.write_text(json.dumps(connections, indent=2))
         self.log(f"Saved connection info for easier management")
@@ -164,7 +164,7 @@ class PiNetAPCore:
         """Load saved connection information"""
         if not self.CONNECTIONS_CONFIG.exists():
             return {}
-        
+
         try:
             return json.loads(self.CONNECTIONS_CONFIG.read_text())
         except Exception as e:
@@ -184,7 +184,7 @@ class PiNetAPCore:
         ret, stdout, _ = self.run_command(["nmcli", "device", "show", interface], check=False)
         if ret != 0:
             return None
-        
+
         for line in stdout.split('\n'):
             if "GENERAL.HWADDR:" in line:
                 parts = line.split(':', 1)
@@ -195,18 +195,18 @@ class PiNetAPCore:
     def get_interface_by_mac(self, mac: str) -> Optional[str]:
         """Find interface name by MAC address"""
         interfaces = self.get_available_interfaces()
-        
+
         for iface in interfaces:
             iface_mac = self.get_interface_mac(iface)
             if iface_mac and iface_mac.lower() == mac.lower():
                 return iface
-        
+
         return None
 
     def save_interface_mapping(self, ap_interface: str, uplink_interface: Optional[str] = None):
         """Save interface to MAC address mapping for persistent identification"""
         mapping = {}
-        
+
         ap_mac = self.get_interface_mac(ap_interface)
         if ap_mac:
             mapping['ap'] = {
@@ -215,7 +215,7 @@ class PiNetAPCore:
                 'timestamp': time.time()
             }
             self.log(f"Saved AP interface mapping: {ap_interface} → {ap_mac}")
-        
+
         if uplink_interface:
             uplink_mac = self.get_interface_mac(uplink_interface)
             if uplink_mac:
@@ -225,7 +225,7 @@ class PiNetAPCore:
                     'timestamp': time.time()
                 }
                 self.log(f"Saved uplink interface mapping: {uplink_interface} → {uplink_mac}")
-        
+
         if mapping:
             self.PINETAP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             self.INTERFACE_CONFIG.write_text(json.dumps(mapping, indent=2))
@@ -235,7 +235,7 @@ class PiNetAPCore:
         """Load saved interface mappings"""
         if not self.INTERFACE_CONFIG.exists():
             return {}
-        
+
         try:
             return json.loads(self.INTERFACE_CONFIG.read_text())
         except Exception as e:
@@ -247,15 +247,15 @@ class PiNetAPCore:
         mapping = self.load_interface_mapping()
         if not mapping:
             return True
-        
+
         all_consistent = True
-        
+
         for role, info in mapping.items():
             expected_iface = info['interface']
             expected_mac = info['mac']
-            
+
             current_mac = self.get_interface_mac(expected_iface)
-            
+
             if current_mac and current_mac.lower() == expected_mac.lower():
                 self.log(f"✓ {role.upper()} interface {expected_iface} consistent (MAC: {expected_mac})", "INFO")
             else:
@@ -273,7 +273,7 @@ class PiNetAPCore:
                         "ERROR"
                     )
                     all_consistent = False
-        
+
         return all_consistent
 
     def get_available_interfaces(self) -> Dict[str, Dict[str, str]]:
@@ -368,7 +368,16 @@ class PiNetAPCore:
         return True
 
     def modify_nm_config(self, add_dnsmasq: bool = True) -> bool:
+        """
+        Modify NetworkManager config to use dnsmasq ONLY if needed.
+        For standalone APs without captive portal, we DON'T need dnsmasq at all.
+        NetworkManager's built-in DHCP (shared mode) handles everything.
+        """
         try:
+            if not add_dnsmasq:
+                self.log("Skipping dnsmasq config (not needed)")
+                return True
+                
             content = self.NM_CONFIG_PATH.read_text() if self.NM_CONFIG_PATH.exists() else ""
 
             if add_dnsmasq:

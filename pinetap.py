@@ -22,7 +22,7 @@ class PiNetAP(PiNetAPNetwork):
 
     def list_interfaces(self, detailed: bool = False):
         interfaces = self.get_available_interfaces()
-        
+
         if not interfaces:
             print("No network interfaces found.")
             return
@@ -30,7 +30,7 @@ class PiNetAP(PiNetAPNetwork):
         print("\n" + "="*80)
         print("AVAILABLE NETWORK INTERFACES")
         print("="*80)
-        
+
         if detailed:
             print(f"{'Interface':<15} {'Type':<15} {'State':<20} {'MAC Address':<20}")
         else:
@@ -45,7 +45,7 @@ class PiNetAP(PiNetAPNetwork):
         for name, info in interfaces.items():
             mac = self.get_interface_mac(name) if detailed else None
             mac_display = mac if mac else "--"
-            
+
             if detailed:
                 print(f"{name:<15} {info['type']:<15} {info['state']:<20} {mac_display:<20}")
             else:
@@ -74,14 +74,14 @@ class PiNetAP(PiNetAPNetwork):
                 expected_iface = info['interface']
                 expected_mac = info['mac']
                 current_iface = self.get_interface_by_mac(expected_mac)
-                
+
                 if current_iface == expected_iface:
                     status = "✓ Same"
                 elif current_iface:
                     status = f"⚠ Now: {current_iface}"
                 else:
                     status = "✗ Not found"
-                
+
                 print(f"{role.upper():<10} {expected_iface:<15} {expected_mac:<20} {status}")
 
         print("\n" + "="*80)
@@ -118,38 +118,38 @@ class PiNetAP(PiNetAPNetwork):
 
     def list_managed_connections(self):
         connections = self.load_managed_connections()
-        
+
         if not connections:
             print("\nNo PiNetAP-managed connections found.")
             print("Use 'pinetap.py install' to create an access point.")
             return
-        
+
         print("\n" + "="*80)
         print("PINETAP MANAGED ACCESS POINTS")
         print("="*80)
         print(f"{'Connection Name':<25} {'SSID':<20} {'Interface':<12} {'Status':<10}")
         print("-"*80)
-        
+
         for con_name, info in connections.items():
             exists = self.connection_exists(con_name)
             status = "Active" if exists else "Deleted"
-            
+
             ssid = info.get('ssid', 'N/A')
             interface = info.get('interface', 'N/A')
-            
+
             print(f"{con_name:<25} {ssid:<20} {interface:<12} {status:<10}")
-        
+
         print("-"*80)
         print(f"\nTotal: {len(connections)} managed connection(s)")
         print("\nTo remove: sudo pinetap.py uninstall --connection <CONNECTION_NAME>")
         print("To remove all: sudo pinetap.py uninstall --all")
         print("="*80)
 
-    def check_interface_available(self, interface: str, for_ap: bool = True, 
+    def check_interface_available(self, interface: str, for_ap: bool = True,
                                  allow_reconnect: bool = False) -> Tuple[bool, str, Optional[str]]:
         """Check if interface is available for use"""
         interfaces = self.get_available_interfaces()
-        
+
         if interface not in interfaces:
             return False, f"Interface {interface} not found", None
 
@@ -165,7 +165,7 @@ class PiNetAP(PiNetAPNetwork):
 
         return True, "Available", None
 
-    def connect_to_uplink(self, uplink_ssid: str, uplink_password: Optional[str], 
+    def connect_to_uplink(self, uplink_ssid: str, uplink_password: Optional[str],
                          uplink_interface: str, autoconnect: bool = True) -> bool:
         self.log(f"Connecting to uplink network: {uplink_ssid} on {uplink_interface}")
 
@@ -178,7 +178,7 @@ class PiNetAP(PiNetAPNetwork):
             self.log(f"Binding uplink to MAC address: {uplink_mac}")
 
         conn_name = f"{uplink_ssid}-Uplink"
-        
+
         if self.connection_exists(conn_name):
             self.log(f"Removing existing uplink connection: {conn_name}")
             self.delete_connection(conn_name)
@@ -232,16 +232,16 @@ class PiNetAP(PiNetAPNetwork):
         portal_services: Optional[List[Dict]] = None
     ) -> bool:
         available, msg, existing_conn = self.check_interface_available(ap_interface, for_ap=True, allow_reconnect=True)
-        
+
         if not available and existing_conn:
             self.log(f"Interface {ap_interface} is currently used by connection: {existing_conn}", "WARN")
             self.log(f"Removing existing connection to free up the interface...")
-            
+
             self.run_command(["nmcli", "con", "down", existing_conn], check=False)
             if not self.delete_connection(existing_conn):
                 self.log(f"Failed to remove existing connection", "ERROR")
                 return False
-            
+
             time.sleep(2)
             self.log(f"Interface {ap_interface} is now available")
         elif not available:
@@ -264,16 +264,19 @@ class PiNetAP(PiNetAPNetwork):
         self.log(f"Creating access point: {ssid} on {ap_interface}")
         self.log(f"⚠ IMPORTANT: Connection will be bound to MAC {ap_mac}", "INFO")
 
+        # Configure system settings based on internet sharing mode
         if share_internet:
             self.enable_ip_forwarding()
             ipv4_method = "shared"
+            self.setup_nat_rules(ap_interface)
             self.log("Configuring for internet sharing (NAT enabled)", "INFO")
         else:
+            # For standalone mode: disable forwarding and block forwarding
             self.disable_ip_forwarding()
-            self.clear_iptables_nat_rules()
-            ipv4_method = "shared"
+            self.block_forwarding_except_local(ap_interface)
+            ipv4_method = "shared"  # Still use shared method for DHCP
             self.log("Configuring for standalone mode (no internet, local network only)", "INFO")
-        
+
         cmd = [
             "nmcli", "con", "add",
             "type", "wifi",
@@ -362,17 +365,18 @@ class PiNetAP(PiNetAPNetwork):
             return False
 
         time.sleep(2)
-        
+
+        # Re-apply firewall rules after NetworkManager starts the connection
         if not share_internet:
             self.log("Re-applying firewall rules to prevent internet sharing...")
-            self.clear_iptables_nat_rules()
-        
+            self.block_forwarding_except_local(ap_interface)
+
         ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
         if ret == 0 and con_name in stdout:
             autoconnect_msg = " (will reconnect on reboot)" if autoconnect else ""
             sharing_msg = " with internet sharing" if share_internet else " (standalone, local only)"
             self.log(f"✓ Access point '{ssid}' created on {ap_interface}{sharing_msg}{autoconnect_msg}!", "SUCCESS")
-            
+
             self.log("\nAP Configuration:", "INFO")
             self.log(f"  SSID: {ssid}", "INFO")
             self.log(f"  Interface: {ap_interface} (MAC: {ap_mac})", "INFO")
@@ -383,19 +387,20 @@ class PiNetAP(PiNetAPNetwork):
                 self.log(f"  Mode: Standalone (no internet)", "INFO")
             else:
                 self.log(f"  Mode: Internet Sharing Enabled", "INFO")
-            
+
             self.save_managed_connection(con_name, ap_interface, ssid, security_mode.value, share_internet, captive_portal)
-            
+
             if captive_portal:
                 self.log("\n📱 Setting up captive portal...")
+                # Configure interface-specific DNS
                 self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0])
                 self.reload_networkmanager(delay=2)
-                
+
                 if self.setup_captive_portal(ip_address.split('/')[0], ssid, ap_interface, portal_services):
                     self.log(f"✓ Captive portal active!", "SUCCESS")
                 else:
                     self.log(f"⚠ Captive portal setup failed", "WARN")
-            
+
             self.log("\n⏳ Waiting then verifying SSID broadcast...", "INFO")
             time.sleep(3)
             ret, stdout, _ = self.run_command(["iwlist", ap_interface, "scan"], check=False)
@@ -403,7 +408,7 @@ class PiNetAP(PiNetAPNetwork):
                 self.log(f"✓ Verified: SSID '{ssid}' is being broadcast!", "SUCCESS")
             else:
                 self.log(f"⚠ Could not verify SSID broadcast", "WARN")
-            
+
             return True
         else:
             self.log("Connection created but failed to activate", "ERROR")
@@ -430,22 +435,19 @@ class PiNetAP(PiNetAPNetwork):
         else:
             self.remove_managed_connection(con_name)
 
-        if was_standalone:
-            self.remove_standalone_dhcp()
-
         if restore_config:
             remaining = self.load_managed_connections()
             if not remaining:
                 self.log("Last PiNetAP connection removed, restoring system state...")
-                
+
                 if had_captive_portal or any(c.get('captive_portal', False) for c in connections.values()):
                     self.remove_captive_portal()
-                
+
                 self.restore_original_system_state()
                 self.restore_nm_config()
                 self.manage_dnsmasq_service("enable")
                 self.reload_networkmanager()
-                
+
                 if self.PINETAP_CONFIG_DIR.exists():
                     try:
                         import shutil
@@ -462,13 +464,13 @@ class PiNetAP(PiNetAPNetwork):
     def remove_all_managed_aps(self, restore_config: bool = True, force: bool = False) -> bool:
         """Remove all PiNetAP-managed connections"""
         connections = self.load_managed_connections()
-        
+
         if not connections:
             self.log("No managed connections to remove", "INFO")
             return True
-        
+
         print("\n" + "="*70)
-        print("⚠️  UNINSTALL ALL PINETAP ACCESS POINTS")
+        print("⚠️ UNINSTALL ALL PINETAP ACCESS POINTS")
         print("="*70)
         print(f"\nThe following {len(connections)} connection(s) will be removed:")
         for con_name, info in connections.items():
@@ -477,53 +479,47 @@ class PiNetAP(PiNetAPNetwork):
             mode = "Standalone" if not info.get('share_internet', True) else "Internet Sharing"
             print(f"  • {con_name}")
             print(f"    SSID: {ssid}, Interface: {interface}, Mode: {mode}")
-        
+
         print("\nThe following will also be cleaned up:")
         print("  • Network configuration restored")
         print("  • IP forwarding restored")
         print("  • iptables rules removed")
         print("  • Captive portal removed (if enabled)")
         print("  • PiNetAP configuration directory removed")
-        
+
         if not force:
             print("\n" + "-"*70)
             response = input("Continue with uninstall? [y/N]: ").strip().lower()
             if response not in ['y', 'yes']:
                 print("Uninstall cancelled.")
                 return False
-        
+
         print("\n" + "="*70)
         print("REMOVING ACCESS POINTS...")
         print("="*70)
-        
-        has_standalone = any(not conn.get('share_internet', True) for conn in connections.values())
-        
+
         success_count = 0
         for con_name in list(connections.keys()):
             print(f"\n[{success_count + 1}/{len(connections)}] Removing {con_name}...")
-            
+
             ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
             if ret == 0 and con_name in stdout:
                 self.log(f"  Disconnecting active connection")
                 self.run_command(["nmcli", "con", "down", con_name], check=False)
                 time.sleep(1)
-            
+
             if self.delete_connection(con_name):
                 self.remove_managed_connection(con_name)
                 success_count += 1
                 print(f"  ✓ Removed")
             else:
                 print(f"  ✗ Failed to remove")
-        
-        if has_standalone:
-            print("\nCleaning up standalone DHCP configuration...")
-            self.remove_standalone_dhcp()
-        
+
         has_captive_portal = any(conn.get('captive_portal', False) for conn in connections.values())
         if has_captive_portal:
             print("\nRemoving captive portal...")
             self.remove_captive_portal()
-        
+
         if restore_config:
             print("\nRestoring system configuration...")
             print("  • Restoring IP forwarding and firewall rules...")
@@ -534,14 +530,14 @@ class PiNetAP(PiNetAPNetwork):
             self.manage_dnsmasq_service("enable")
             print("  • Reloading NetworkManager...")
             self.reload_networkmanager()
-        
+
         if self.INTERFACE_CONFIG.exists():
             try:
                 self.INTERFACE_CONFIG.unlink()
                 print("  • Removed interface mapping")
             except Exception as e:
                 self.log(f"Failed to remove interface mapping: {e}", "WARN")
-        
+
         if self.PINETAP_CONFIG_DIR.exists():
             try:
                 import shutil
@@ -549,14 +545,14 @@ class PiNetAP(PiNetAPNetwork):
                 print("  • Removed PiNetAP configuration directory")
             except Exception as e:
                 self.log(f"Could not remove config directory: {e}", "WARN")
-        
+
         print("\n" + "="*70)
         if success_count == len(connections):
             print(f"✅ Successfully removed all {success_count} connection(s)!")
         else:
-            print(f"⚠️  Removed {success_count}/{len(connections)} connection(s)")
+            print(f"⚠️ Removed {success_count}/{len(connections)} connection(s)")
         print("="*70)
-        
+
         return success_count == len(connections)
 
     def diagnose_ap(self, con_name: Optional[str] = None):
@@ -564,7 +560,7 @@ class PiNetAP(PiNetAPNetwork):
         print("\n" + "="*70)
         print("ACCESS POINT DIAGNOSTICS")
         print("="*70)
-        
+
         ret, stdout, _ = self.run_command(["nmcli", "con", "show"], check=False)
         ap_connections = []
         if ret == 0:
@@ -572,31 +568,31 @@ class PiNetAP(PiNetAPNetwork):
                 parts = line.split()
                 if len(parts) >= 3 and 'wifi' in line.lower():
                     ap_connections.append(parts[0])
-        
+
         if not ap_connections:
             print("\n❌ No WiFi connections found")
             return
-        
+
         print(f"\n📡 Found {len(ap_connections)} WiFi connection(s):")
         for conn in ap_connections:
             print(f"   - {conn}")
-        
+
         target_conn = con_name if con_name else ap_connections[0]
-        
+
         print(f"\n🔍 Diagnosing: {target_conn}")
         print("-"*70)
-        
+
         ret, stdout, _ = self.run_command(["nmcli", "con", "show", target_conn], check=False)
         if ret != 0:
             print(f"❌ Cannot read connection '{target_conn}'")
             return
-        
+
         config = {}
         for line in stdout.split('\n'):
             if ':' in line:
                 key, value = line.split(':', 1)
                 config[key.strip()] = value.strip()
-        
+
         print("\n📋 Configuration:")
         important_keys = [
             '802-11-wireless.mode', '802-11-wireless.ssid',
@@ -605,15 +601,15 @@ class PiNetAP(PiNetAPNetwork):
             'ipv4.method', 'ipv4.addresses',
             'connection.autoconnect', 'GENERAL.DEVICES', 'GENERAL.STATE'
         ]
-        
+
         for key in important_keys:
             if key in config and config[key] != '--':
                 print(f"   {key}: {config[key]}")
-        
+
         ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
         is_active = ret == 0 and target_conn in stdout
         print(f"\n🔌 Connection Status: {'✓ ACTIVE' if is_active else '✗ INACTIVE'}")
-        
+
         print("\n🌐 IP Forwarding:")
         try:
             with open("/proc/sys/net/ipv4/ip_forward", "r") as f:
@@ -621,13 +617,93 @@ class PiNetAP(PiNetAPNetwork):
             print(f"   {'✓ Enabled' if value == '1' else '✗ Disabled'}")
         except Exception:
             print("   ? Cannot check")
-        
+
+        # Check for captive portal
+        connections = self.load_managed_connections()
+        has_captive = False
+        ap_interface = None
+        for conn, info in connections.items():
+            if conn == target_conn:
+                has_captive = info.get('captive_portal', False)
+                ap_interface = info.get('interface')
+                break
+
+        if has_captive:
+            print("\n📱 Captive Portal Diagnostics:")
+            print("-"*70)
+            
+            # Check portal service
+            ret, _, _ = self.run_command(["systemctl", "is-active", "pinetap-portal"], check=False)
+            status = "✓ Running" if ret == 0 else "✗ Not Running"
+            print(f"   Portal Service: {status}")
+            
+            if ret != 0:
+                print("   Attempting to start portal...")
+                self.run_command(["systemctl", "start", "pinetap-portal"], check=False)
+                time.sleep(1)
+                ret, _, _ = self.run_command(["systemctl", "is-active", "pinetap-portal"], check=False)
+                if ret == 0:
+                    print("   ✓ Portal started successfully")
+                else:
+                    print("   ✗ Failed to start portal")
+                    print("\n   Check logs: sudo journalctl -u pinetap-portal -n 20")
+            
+            # Check if portal responds
+            ret, stdout, _ = self.run_command([
+                "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                "http://192.168.4.1/"
+            ], check=False)
+            
+            if ret == 0:
+                code = stdout.strip()
+                if code == "200":
+                    print(f"   Portal HTTP: ✓ Responding (HTTP {code})")
+                else:
+                    print(f"   Portal HTTP: ⚠ Unexpected response (HTTP {code})")
+            else:
+                print(f"   Portal HTTP: ✗ Not responding")
+            
+            # Check DNS config
+            if ap_interface:
+                dns_conf = Path(f"/etc/NetworkManager/dnsmasq.d/pinetap-captive-{ap_interface}.conf")
+                if dns_conf.exists():
+                    print(f"   DNS Config: ✓ Found ({dns_conf})")
+                else:
+                    print(f"   DNS Config: ✗ Missing")
+            
+            # Check iptables rules
+            ret, stdout, _ = self.run_command([
+                "iptables", "-t", "nat", "-L", "PREROUTING", "-n"
+            ], check=False)
+            
+            if ret == 0 and ap_interface and ap_interface in stdout:
+                print(f"   iptables Rules: ✓ Found for {ap_interface}")
+            else:
+                print(f"   iptables Rules: ⚠ May be missing")
+            
+            # Check NetworkManager dnsmasq
+            ret, _, _ = self.run_command(["pgrep", "-f", "dnsmasq.*NetworkManager"], check=False)
+            if ret == 0:
+                print(f"   dnsmasq: ✓ Running for NetworkManager")
+            else:
+                print(f"   dnsmasq: ⚠ Not running")
+
         print("\n" + "="*70)
         print("💡 TROUBLESHOOTING TIPS:")
         print("="*70)
         if not is_active:
             print("❌ Connection is not active!")
             print(f"   Try: sudo nmcli con up {target_conn}")
+        
+        if has_captive:
+            print("\n🔧 Captive Portal Tips:")
+            print("   1. Restart portal: sudo systemctl restart pinetap-portal")
+            print("   2. Check logs: sudo journalctl -u pinetap-portal -f")
+            print("   3. Test DNS: nslookup google.com (from client device)")
+            print("   4. Test HTTP: curl http://google.com (from client device)")
+            print("   5. View iptables: sudo iptables -t nat -L PREROUTING -n -v")
+            print("   6. Reload NetworkManager: sudo systemctl reload NetworkManager")
+        
         print("\n🔧 Common fixes:")
         print("   1. Restart NetworkManager: sudo systemctl restart NetworkManager")
         print("   2. Check logs: journalctl -u NetworkManager -f")
@@ -638,10 +714,10 @@ class PiNetAP(PiNetAPNetwork):
         print("\n" + "="*70)
         print("AUTOMATIC AP ISSUE FIXER")
         print("="*70)
-        
+
         issues_fixed = 0
         issues_found = 0
-        
+
         print("\n[1/2] Checking NetworkManager...")
         if not self.check_networkmanager():
             issues_found += 1
@@ -654,7 +730,7 @@ class PiNetAP(PiNetAPNetwork):
                 issues_fixed += 1
         else:
             print("   ✓ Running")
-        
+
         print("\n[2/2] Checking AP connection...")
         if not con_name:
             ret, stdout, _ = self.run_command(["nmcli", "con", "show"], check=False)
@@ -662,11 +738,11 @@ class PiNetAP(PiNetAPNetwork):
                 if 'wifi' in line.lower():
                     con_name = line.split()[0]
                     break
-        
+
         if con_name:
             ret, stdout, _ = self.run_command(["nmcli", "con", "show", "--active"], check=False)
             is_active = ret == 0 and con_name in stdout
-            
+
             if not is_active:
                 issues_found += 1
                 print(f"   ❌ Not active")
@@ -677,14 +753,14 @@ class PiNetAP(PiNetAPNetwork):
                     issues_fixed += 1
             else:
                 print("   ✓ Active")
-        
+
         print("\n" + "="*70)
         if issues_found == 0:
             print("✅ No issues found!")
         elif issues_fixed == issues_found:
             print(f"✅ All {issues_fixed} issue(s) fixed!")
         else:
-            print(f"⚠️  Fixed {issues_fixed}/{issues_found} issue(s)")
+            print(f"⚠️ Fixed {issues_fixed}/{issues_found} issue(s)")
         print("="*70)
 
 
@@ -756,7 +832,7 @@ Examples:
 
     diagnose_parser = subparsers.add_parser("diagnose", help="Diagnose AP")
     diagnose_parser.add_argument("--connection")
-    
+
     fix_parser = subparsers.add_parser("fix", help="Fix AP issues")
     fix_parser.add_argument("--connection")
 
@@ -799,7 +875,7 @@ Examples:
 
     if args.command == "install":
         security_mode = SecurityMode(args.security)
-        
+
         is_valid, error_msg = manager.validate_password(args.password, security_mode)
         if not is_valid:
             manager.log(f"Password validation failed: {error_msg}", "ERROR")
@@ -822,9 +898,16 @@ Examples:
 
         manager.save_original_system_state()
         manager.backup_nm_config()
-        manager.modify_nm_config(add_dnsmasq=True)
-        manager.manage_dnsmasq_service("disable")
-        manager.reload_networkmanager()
+        
+        # CRITICAL: Only modify NetworkManager to use dnsmasq if captive portal is enabled
+        # Otherwise, NetworkManager's built-in DHCP (shared mode) is sufficient
+        if args.captive_portal:
+            manager.modify_nm_config(add_dnsmasq=True)
+            manager.manage_dnsmasq_service("disable")
+            manager.reload_networkmanager()
+            manager.log("Configured NetworkManager with dnsmasq for captive portal")
+        else:
+            manager.log("Using NetworkManager's built-in DHCP (no dnsmasq needed)")
 
         portal_services = None
         if args.portal_services:
@@ -872,7 +955,7 @@ Examples:
         else:
             manager.log("Specify --connection or --all", "ERROR")
             return 1
-        
+
         return 0 if success else 1
 
     return 0

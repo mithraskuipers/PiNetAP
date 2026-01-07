@@ -2,6 +2,7 @@
 """
 PiNetAP Network - Captive Portal and Network Configuration
 Contains all networking, captive portal, DNS, and iptables management
+FIXED: Enhanced captive portal detection for reliable auto-popup
 """
 
 import time
@@ -146,6 +147,10 @@ class PiNetAPNetwork(PiNetAPCore):
             success_page = self.CAPTIVE_PORTAL_DIR / "success.txt"
             success_page.write_text("success\n")
             
+            # Create empty files for detection endpoints
+            (self.CAPTIVE_PORTAL_DIR / "generate_204").write_text("")
+            (self.CAPTIVE_PORTAL_DIR / "gen_204").write_text("")
+            
             # Create captive portal server script with PROPER detection
             server_script = f'''#!/usr/bin/env python3
 import http.server
@@ -156,6 +161,10 @@ PORT = {port}
 AP_IP = "{ap_ip}"
 
 class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
+
+    def log_message(self, format, *args):
+        """Log all requests for debugging"""
+        print(f"{{self.address_string()}} {{format % args}}")
 
     def do_HEAD(self):
         """Handle HEAD requests (used by Windows)"""
@@ -175,88 +184,98 @@ class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.lower()
+        print(f"Request: {{path}} from {{self.client_address[0]}}")
         
-        # === ANDROID DETECTION (CRITICAL!) ===
-        # Android checks these endpoints and expects HTTP 204 or specific responses
-        if path in ("/generate_204", "/gen_204"):
-            # Return 200 with portal page to trigger captive portal
+        # === CRITICAL: Android Detection (MOST IMPORTANT) ===
+        if "/generate_204" in path or "/gen_204" in path:
+            # Return 200 with portal page instead of 204
+            # This triggers Android to show "Sign in to network" notification
+            print("→ Android detection endpoint hit!")
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            with open("index.html", "rb") as f:
-                self.wfile.write(f.read())
+            try:
+                with open("index.html", "rb") as f:
+                    content = f.read()
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            except Exception as e:
+                print(f"Error reading index.html: {{e}}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
             return
-            
-        # Android success check
+        
+        # Android success check (after login)
         if "success.txt" in path:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
+            print("→ Android success check")
+            self.send_response(204)
             self.end_headers()
-            self.wfile.write(b"success\\n")
             return
-
-        # === WINDOWS DETECTION ===
-        if "ncsi.txt" in path:
-            # Return portal instead of expected "Microsoft NCSI"
+        
+        # === iOS/macOS Detection ===
+        if "hotspot-detect" in path or "/library/test/success.html" in path:
+            print("→ iOS/macOS detection endpoint hit!")
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
-            self.end_headers()
             with open("index.html", "rb") as f:
-                self.wfile.write(f.read())
+                content = f.read()
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        
+        # === Windows Detection ===
+        if "ncsi.txt" in path:
+            # Return portal instead of "Microsoft NCSI"
+            print("→ Windows detection endpoint hit!")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            with open("index.html", "rb") as f:
+                content = f.read()
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
             return
             
         if "connecttest.txt" in path:
+            print("→ Windows connecttest hit!")
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
-            self.end_headers()
             with open("index.html", "rb") as f:
-                self.wfile.write(f.read())
+                content = f.read()
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
             return
 
-        # === APPLE DETECTION ===
-        if "hotspot-detect" in path or "hotspot" in path:
-            # iOS/macOS expects specific HTML response
+        # === Firefox Detection ===
+        if "canonical.html" in path or "detectportal" in path:
+            print("→ Firefox detection endpoint hit!")
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
-            self.end_headers()
             with open("index.html", "rb") as f:
-                self.wfile.write(f.read())
-            return
-            
-        if "success.html" in path or "apple.com" in path:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+                content = f.read()
+            self.send_header("Content-Length", str(len(content)))
             self.end_headers()
-            with open("index.html", "rb") as f:
-                self.wfile.write(f.read())
+            self.wfile.write(content)
             return
 
-        # === FIREFOX DETECTION ===
-        if "detectportal.firefox.com" in path or "canonical.html" in path:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            with open("index.html", "rb") as f:
-                self.wfile.write(f.read())
-            return
-
-        # === NORMAL BROWSING ===
+        # === Normal browsing ===
         if path in ("/", "/index.html", "/splash.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
-            self.end_headers()
             with open("index.html", "rb") as f:
-                self.wfile.write(f.read())
+                content = f.read()
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
             return
 
-        # Everything else: redirect to portal
+        # === Everything else: redirect to portal ===
+        print(f"→ Unknown path, redirecting to portal")
         self.send_response(302)
         self.send_header("Location", f"http://{{AP_IP}}/")
         self.end_headers()
-
-    def log_message(self, format, *args):
-        """Log requests for debugging"""
-        print(f"{{self.address_string()}} - {{format % args}}")
 
 if __name__ == "__main__":
     os.chdir("{self.CAPTIVE_PORTAL_DIR}")
@@ -341,15 +360,14 @@ WantedBy=multi-user.target
 
     def _configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
         """
-        Configure DNS ONLY for the AP interface to redirect ALL queries to portal.
+        FIXED: Configure DNS ONLY for the AP interface with enhanced detection.
         This is CRITICAL for captive portal detection to work properly.
         """
         try:
-            self.log(f"Configuring captive DNS for {ap_interface}...")
+            self.log(f"Configuring enhanced captive DNS for {ap_interface}...")
             
-            # CRITICAL: This config makes ALL DNS queries from AP clients return the portal IP
-            # This triggers the captive portal detection on devices
-            captive_dns_conf = f"""# PiNetAP Captive Portal DNS - INTERFACE SPECIFIC
+            # CRITICAL: Enhanced DNS configuration for reliable captive portal detection
+            captive_dns_conf = f"""# PiNetAP Captive Portal DNS - Enhanced for Auto-Detection
 # CRITICAL: Only affects {ap_interface}, not other interfaces
 
 # Bind ONLY to the AP interface and its IP
@@ -357,45 +375,67 @@ interface={ap_interface}
 listen-address={ap_ip}
 bind-interfaces
 
-# CRITICAL: Return portal IP for ALL domains (this triggers captive portal detection)
-address=/#/{ap_ip}
+# Don't use upstream DNS servers - we answer everything
+no-resolv
+no-poll
 
-# Specific overrides for known captive portal detection endpoints
-# iOS/macOS
-address=/captive.apple.com/{ap_ip}
-address=/www.apple.com/{ap_ip}
-# Android
+# CRITICAL: Explicitly handle captive portal detection domains
+# These MUST return our portal IP to trigger the popup
+
+# === ANDROID Detection (MOST CRITICAL) ===
 address=/connectivitycheck.android.com/{ap_ip}
 address=/connectivitycheck.gstatic.com/{ap_ip}
-address=/clients3.google.com/{ap_ip}
 address=/www.google.com/{ap_ip}
-# Windows
+address=/clients3.google.com/{ap_ip}
+address=/clients4.google.com/{ap_ip}
+address=/play.googleapis.com/{ap_ip}
+
+# === iOS/macOS Detection ===
+address=/captive.apple.com/{ap_ip}
+address=/www.apple.com/{ap_ip}
+address=/www.itools.info/{ap_ip}
+address=/www.ibook.info/{ap_ip}
+address=/www.airport.us/{ap_ip}
+address=/www.thinkdifferent.us/{ap_ip}
+
+# === Windows Detection ===
 address=/www.msftconnecttest.com/{ap_ip}
 address=/www.msftncsi.com/{ap_ip}
 address=/ipv6.msftconnecttest.com/{ap_ip}
-# Firefox
+address=/dns.msftncsi.com/{ap_ip}
+
+# === Firefox/Chrome Detection ===
 address=/detectportal.firefox.com/{ap_ip}
 address=/detectportal.cdn.mozilla.net/{ap_ip}
 
-# Don't forward queries upstream - we answer everything
-no-resolv
-no-poll
-bogus-priv
+# === Catch-all: Redirect ALL other domains ===
+address=/#/{ap_ip}
+
+# Don't read /etc/hosts or other config files
+no-hosts
+expand-hosts
 
 # Disable caching for immediate response
 cache-size=0
 
-# DHCP for this interface (optional, NetworkManager handles this)
-# But we can add some options for better compatibility
+# Don't forward to upstream DNS
+bogus-priv
+
+# DHCP options to ensure our DNS is used
 dhcp-option={ap_interface},3,{ap_ip}
 dhcp-option={ap_interface},6,{ap_ip}
+dhcp-authoritative
+
+# Log queries for debugging (disable in production if needed)
+log-queries
+log-dhcp
 """
             
             captive_dns_file = self.DNSMASQ_CONF_DIR / f"pinetap-captive-{ap_interface}.conf"
             self.DNSMASQ_CONF_DIR.mkdir(parents=True, exist_ok=True)
             captive_dns_file.write_text(captive_dns_conf)
             
-            self.log(f"✓ DNS hijacking configured for {ap_interface}", "SUCCESS")
+            self.log(f"✓ Enhanced DNS hijacking configured for {ap_interface}", "SUCCESS")
             self.log(f"  ALL DNS queries from {ap_interface} → {ap_ip}", "INFO")
             self.log(f"  This triggers captive portal detection!", "INFO")
             self.log(f"  Config: {captive_dns_file}", "INFO")
@@ -590,6 +630,75 @@ dhcp-option={ap_interface},6,{ap_ip}
     def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
         """Configure DNS for captive portal - interface specific"""
         return self._configure_captive_portal_dns(ap_interface, ap_ip)
+
+    def ensure_dnsmasq_active(self) -> bool:
+        """
+        Ensure NetworkManager's dnsmasq is actually running
+        """
+        try:
+            self.log("Ensuring NetworkManager dnsmasq is active...")
+            
+            # Check if dnsmasq process is running under NetworkManager
+            ret, stdout, _ = self.run_command([
+                "pgrep", "-f", "dnsmasq.*NetworkManager"
+            ], check=False)
+            
+            if ret == 0:
+                self.log("✓ NetworkManager dnsmasq is running", "SUCCESS")
+                return True
+            else:
+                self.log("⚠ NetworkManager dnsmasq not detected, reloading...", "WARN")
+                self.reload_networkmanager(delay=3)
+                
+                # Check again
+                time.sleep(2)
+                ret, stdout, _ = self.run_command([
+                    "pgrep", "-f", "dnsmasq.*NetworkManager"
+                ], check=False)
+                
+                if ret == 0:
+                    self.log("✓ NetworkManager dnsmasq is now running", "SUCCESS")
+                    return True
+                else:
+                    self.log("✗ Failed to start NetworkManager dnsmasq", "ERROR")
+                    self.log("  Try: sudo systemctl restart NetworkManager", "INFO")
+                    return False
+                    
+        except Exception as e:
+            self.log(f"Error checking dnsmasq: {e}", "ERROR")
+            return False
+
+    def verify_captive_portal_working(self, ap_ip: str) -> bool:
+        """
+        Verify that captive portal is properly configured and responding
+        """
+        self.log("\n🧪 Testing captive portal detection...", "INFO")
+        
+        tests = [
+            ("Android", f"http://{ap_ip}/generate_204"),
+            ("iOS", f"http://{ap_ip}/hotspot-detect.html"),
+            ("Windows", f"http://{ap_ip}/ncsi.txt"),
+        ]
+        
+        all_passed = True
+        for name, url in tests:
+            ret, stdout, _ = self.run_command([
+                "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                url
+            ], check=False)
+            
+            if ret == 0:
+                code = stdout.strip()
+                if code == "200":
+                    self.log(f"  ✓ {name} detection: Working (HTTP {code})", "SUCCESS")
+                else:
+                    self.log(f"  ✗ {name} detection: Wrong code (HTTP {code})", "WARN")
+                    all_passed = False
+            else:
+                self.log(f"  ✗ {name} detection: Not responding", "ERROR")
+                all_passed = False
+        
+        return all_passed
 
     # IP Forwarding and Firewall Management
     def save_original_system_state(self):

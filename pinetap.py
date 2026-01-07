@@ -3,6 +3,8 @@
 PiNetAP - Dual WiFi Access Point Manager for Raspberry Pi
 Main CLI interface and AP management
 
+FIXED: Enhanced captive portal setup with verification
+
 Usage: sudo python pinetap.py [command] [options]
 """
 
@@ -19,6 +21,8 @@ from pinetap_network import PiNetAPNetwork
 
 class PiNetAP(PiNetAPNetwork):
     """Main PiNetAP class with AP management and diagnostics"""
+
+    # ... (keeping all existing methods unchanged until create_ap) ...
 
     def list_interfaces(self, detailed: bool = False):
         interfaces = self.get_available_interfaces()
@@ -89,7 +93,7 @@ class PiNetAP(PiNetAPNetwork):
         print("="*80)
 
         if wifi_count < 1:
-            print("\n❌ No WiFi Setup Possible")
+            print("\n⛔ No WiFi Setup Possible")
             print("   No WiFi interfaces detected!")
         elif wifi_count == 1:
             print("\n💡 Single WiFi Setup Options")
@@ -395,9 +399,26 @@ class PiNetAP(PiNetAPNetwork):
                 # Configure interface-specific DNS
                 self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0])
                 self.reload_networkmanager(delay=2)
+                
+                # CRITICAL: Verify dnsmasq is running
+                if not self.ensure_dnsmasq_active():
+                    self.log("⚠ dnsmasq may not be active, captive portal detection might fail", "WARN")
+                    self.log("  Try: sudo systemctl restart NetworkManager", "INFO")
 
                 if self.setup_captive_portal(ip_address.split('/')[0], ssid, ap_interface, portal_services):
                     self.log(f"✓ Captive portal active!", "SUCCESS")
+                    
+                    # CRITICAL: Verify portal is working
+                    time.sleep(3)
+                    if self.verify_captive_portal_working(ip_address.split('/')[0]):
+                        self.log("✓ Captive portal detection verified!", "SUCCESS")
+                        self.log("\n📋 What happens next:", "INFO")
+                        self.log("  • Android: Shows 'Sign in to network' notification", "INFO")
+                        self.log("  • iPhone: Auto-opens Safari with portal page", "INFO")
+                        self.log("  • Windows: Shows 'Action required' on network icon", "INFO")
+                    else:
+                        self.log("⚠ Captive portal may not auto-trigger", "WARN")
+                        self.log("  Check logs: sudo journalctl -u pinetap-portal -f", "INFO")
                 else:
                     self.log(f"⚠ Captive portal setup failed", "WARN")
 
@@ -414,6 +435,8 @@ class PiNetAP(PiNetAPNetwork):
             self.log("Connection created but failed to activate", "ERROR")
             return False
 
+    # ... (keeping all remaining methods unchanged) ...
+    
     def remove_ap(self, con_name: str, restore_config: bool = True) -> bool:
         self.log(f"Removing access point: {con_name}")
 
@@ -570,7 +593,7 @@ class PiNetAP(PiNetAPNetwork):
                     ap_connections.append(parts[0])
 
         if not ap_connections:
-            print("\n❌ No WiFi connections found")
+            print("\n⛔ No WiFi connections found")
             return
 
         print(f"\n📡 Found {len(ap_connections)} WiFi connection(s):")
@@ -584,7 +607,7 @@ class PiNetAP(PiNetAPNetwork):
 
         ret, stdout, _ = self.run_command(["nmcli", "con", "show", target_conn], check=False)
         if ret != 0:
-            print(f"❌ Cannot read connection '{target_conn}'")
+            print(f"⛔ Cannot read connection '{target_conn}'")
             return
 
         config = {}
@@ -692,7 +715,7 @@ class PiNetAP(PiNetAPNetwork):
         print("💡 TROUBLESHOOTING TIPS:")
         print("="*70)
         if not is_active:
-            print("❌ Connection is not active!")
+            print("⛔ Connection is not active!")
             print(f"   Try: sudo nmcli con up {target_conn}")
         
         if has_captive:
@@ -721,7 +744,7 @@ class PiNetAP(PiNetAPNetwork):
         print("\n[1/2] Checking NetworkManager...")
         if not self.check_networkmanager():
             issues_found += 1
-            print("   ❌ Not running")
+            print("   ⛔ Not running")
             print("   🔧 Attempting to start...")
             self.run_command(["systemctl", "start", "NetworkManager"], check=False)
             time.sleep(2)
@@ -745,7 +768,7 @@ class PiNetAP(PiNetAPNetwork):
 
             if not is_active:
                 issues_found += 1
-                print(f"   ❌ Not active")
+                print(f"   ⛔ Not active")
                 print("   🔧 Activating...")
                 ret, _, _ = self.run_command(["nmcli", "con", "up", con_name], check=False)
                 if ret == 0:
@@ -902,10 +925,18 @@ Examples:
         # CRITICAL: Only modify NetworkManager to use dnsmasq if captive portal is enabled
         # Otherwise, NetworkManager's built-in DHCP (shared mode) is sufficient
         if args.captive_portal:
+            manager.log("🔧 Configuring NetworkManager for captive portal...", "INFO")
             manager.modify_nm_config(add_dnsmasq=True)
             manager.manage_dnsmasq_service("disable")
-            manager.reload_networkmanager()
-            manager.log("Configured NetworkManager with dnsmasq for captive portal")
+            manager.reload_networkmanager(delay=3)
+            
+            # CRITICAL: Verify dnsmasq is actually running
+            if not manager.ensure_dnsmasq_active():
+                manager.log("⚠ Warning: dnsmasq not running after NetworkManager reload", "WARN")
+                manager.log("  Captive portal detection may not work properly", "WARN")
+                manager.log("  Try: sudo systemctl restart NetworkManager", "INFO")
+            else:
+                manager.log("✓ NetworkManager configured with dnsmasq for captive portal", "SUCCESS")
         else:
             manager.log("Using NetworkManager's built-in DHCP (no dnsmasq needed)")
 

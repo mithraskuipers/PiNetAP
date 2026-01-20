@@ -724,18 +724,18 @@ dhcp-authoritative
 log-queries
 log-dhcp
 """
-            
-            # CRITICAL: NetworkManager reads from dnsmasq-shared.d, NOT dnsmasq.d
+        
+            # CRITICAL: NetworkManager reads dnsmasq config from dnsmasq-shared.d, NOT dnsmasq.d!
             dnsmasq_shared_dir = Path("/etc/NetworkManager/dnsmasq-shared.d")
             dnsmasq_shared_dir.mkdir(parents=True, exist_ok=True)
             captive_dns_file = dnsmasq_shared_dir / f"pinetap-captive-{ap_interface}.conf"
-
             captive_dns_file.write_text(captive_dns_conf)
             
             self.log(f"✓ Enhanced DNS hijacking configured for {ap_interface}", "SUCCESS")
             self.log(f"  ALL DNS queries from {ap_interface} → {ap_ip}", "INFO")
             self.log(f"  This triggers captive portal detection!", "INFO")
             self.log(f"  Config: {captive_dns_file}", "INFO")
+            self.log(f"  ⚠️ IMPORTANT: Using dnsmasq-shared.d (required by NetworkManager)", "INFO")
             
             return True
         except Exception as e:
@@ -869,8 +869,11 @@ log-dhcp
             for conf_dir in [self.DNSMASQ_CONF_DIR, Path("/etc/NetworkManager/dnsmasq-shared.d")]:
                 if conf_dir.exists():
                     for conf_file in conf_dir.glob("pinetap-captive-*.conf"):
-                        conf_file.unlink()
-                        self.log(f"Removed DNS config: {conf_file}")
+                        try:
+                            conf_file.unlink()
+                            self.log(f"Removed DNS config: {conf_file}")
+                        except Exception as e:
+                            self.log(f"Could not remove {conf_file}: {e}", "WARN")
             
             # Remove portal directory
             if self.CAPTIVE_PORTAL_DIR.exists():

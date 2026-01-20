@@ -476,9 +476,10 @@ class PiNetAP(PiNetAPNetwork):
                 self.log("Step 1/5: Configuring DNS hijacking...")
                 self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0])
 
-                # Step 2: Reload NetworkManager to apply DNS config
-                self.log("Step 2/5: Reloading NetworkManager to apply DNS...")
-                self.reload_networkmanager(delay=3)
+                # Step 2: RESTART (not reload) NetworkManager to apply DNS config from dnsmasq-shared.d
+                self.log("Step 2/5: Restarting NetworkManager to apply DNS...")
+                self.run_command(["systemctl", "restart", "NetworkManager"], check=False)
+                time.sleep(3)  # Wait for NetworkManager to fully restart
 
                 # Step 3: Wait for dnsmasq to start
                 self.log("Step 3/5: Waiting for dnsmasq to start...")

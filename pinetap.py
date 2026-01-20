@@ -22,7 +22,81 @@ from pinetap_network import PiNetAPNetwork
 class PiNetAP(PiNetAPNetwork):
     """Main PiNetAP class with AP management and diagnostics"""
 
-    # ... (keeping all existing methods unchanged until create_ap) ...
+    def save_original_system_state(self) -> bool:
+        """Save current system state before making changes"""
+        try:
+            self.log("Saving original system state...")
+
+            # Save current IP forwarding setting
+            try:
+                with open("/proc/sys/net/ipv4/ip_forward", "r") as f:
+                    self._original_ip_forward = f.read().strip()
+                self.log(f"Saved IP forwarding state: {self._original_ip_forward}")
+            except Exception as e:
+                self.log(f"Could not read IP forwarding state: {e}", "WARN")
+                self._original_ip_forward = "0"  # Default to disabled
+
+            # Save current iptables rules
+            rules_file = Path("/etc/pinetap/iptables-original.rules")
+            self.PINETAP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+            ret, stdout, _ = self.run_command(["iptables-save"], check=False)
+            if ret == 0 and stdout:
+                rules_file.write_text(stdout)
+                self.log(f"Saved original iptables rules to {rules_file}")
+            else:
+                self.log("Could not save iptables rules", "WARN")
+
+            self.log("✓ Original system state saved", "SUCCESS")
+            return True
+
+        except Exception as e:
+            self.log(f"Failed to save system state: {e}", "WARN")
+            return False
+
+    def restore_original_system_state(self) -> bool:
+        """Restore original system state (IP forwarding, firewall rules, etc.)"""
+        try:
+            self.log("Restoring original system state...")
+
+            # Restore IP forwarding
+            if hasattr(self, '_original_ip_forward'):
+                self.log(f"Restoring IP forwarding to: {self._original_ip_forward}")
+                ret, _, _ = self.run_command([
+                    "sysctl", "-w", f"net.ipv4.ip_forward={self._original_ip_forward}"
+                ], check=False)
+                if ret == 0:
+                    self.log("✓ IP forwarding restored", "SUCCESS")
+
+            # Remove captive portal iptables rules
+            self._remove_captive_portal_iptables()
+
+            # Flush custom iptables rules (be careful not to break system)
+            self.log("Cleaning up iptables rules...")
+
+            # Remove NAT rules for AP interfaces
+            self.run_command([
+                "iptables", "-t", "nat", "-F", "PREROUTING"
+            ], check=False)
+
+            self.run_command([
+                "iptables", "-t", "nat", "-F", "POSTROUTING"
+            ], check=False)
+
+            # Reload saved iptables if available
+            rules_file = Path("/etc/pinetap/iptables-original.rules")
+            if rules_file.exists():
+                self.log(f"Restoring original iptables from {rules_file}")
+                self.run_command([
+                    "iptables-restore", str(rules_file)
+                ], check=False)
+
+            self.log("✓ Original system state restored", "SUCCESS")
+            return True
+
+        except Exception as e:
+            self.log(f"Failed to restore system state: {e}", "WARN")
+            return False
 
     def list_interfaces(self, detailed: bool = False):
         interfaces = self.get_available_interfaces()
@@ -266,7 +340,7 @@ class PiNetAP(PiNetAPNetwork):
             self.delete_connection(con_name)
 
         self.log(f"Creating access point: {ssid} on {ap_interface}")
-        self.log(f"⚠ IMPORTANT: Connection will be bound to MAC {ap_mac}", "INFO")
+        self.log(f"⚠️ IMPORTANT: Connection will be bound to MAC {ap_mac}", "INFO")
 
         # Configure system settings based on internet sharing mode
         if share_internet:
@@ -394,22 +468,46 @@ class PiNetAP(PiNetAPNetwork):
 
             self.save_managed_connection(con_name, ap_interface, ssid, security_mode.value, share_internet, captive_portal)
 
+            # CRITICAL FIX: Setup captive portal AFTER AP is fully active
             if captive_portal:
-                self.log("\n📱 Setting up captive portal...")
-                # Configure interface-specific DNS
-                self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0])
-                self.reload_networkmanager(delay=2)
-                
-                # CRITICAL: Verify dnsmasq is running
-                if not self.ensure_dnsmasq_active():
-                    self.log("⚠ dnsmasq may not be active, captive portal detection might fail", "WARN")
-                    self.log("  Try: sudo systemctl restart NetworkManager", "INFO")
+                self.log("\n📱 Setting up captive portal...", "INFO")
 
+                # Step 1: Configure DNS FIRST (before portal server)
+                self.log("Step 1/5: Configuring DNS hijacking...")
+                self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0])
+
+                # Step 2: Reload NetworkManager to apply DNS config
+                self.log("Step 2/5: Reloading NetworkManager to apply DNS...")
+                self.reload_networkmanager(delay=3)
+
+                # Step 3: Wait for dnsmasq to start
+                self.log("Step 3/5: Waiting for dnsmasq to start...")
+                time.sleep(2)
+
+                # Step 4: Verify dnsmasq is running
+                self.log("Step 4/5: Verifying dnsmasq is active...")
+                if not self.ensure_dnsmasq_active():
+                    self.log("⚠️ dnsmasq may not be active, captive portal detection might fail", "WARN")
+                    self.log("  Try: sudo systemctl restart NetworkManager", "INFO")
+                    # Don't fail here, continue and let user decide
+
+                # Step 5: Setup portal web server
+                self.log("Step 5/5: Starting captive portal web server...")
                 if self.setup_captive_portal(ip_address.split('/')[0], ssid, ap_interface, portal_services):
-                    self.log(f"✓ Captive portal active!", "SUCCESS")
-                    
-                    # CRITICAL: Verify portal is working
+                    self.log("✓ Captive portal web server active!", "SUCCESS")
+
+                    # CRITICAL: Verify everything is working
                     time.sleep(3)
+
+                    # Test DNS hijacking
+                    self.log("\n🧪 Verifying captive portal setup...", "INFO")
+                    if self.verify_dns_hijacking(ip_address.split('/')[0]):
+                        self.log("✓ DNS hijacking verified!", "SUCCESS")
+                    else:
+                        self.log("⚠️ DNS hijacking may not be working", "WARN")
+                        self.log("  Test manually: nslookup google.com " + ip_address.split('/')[0], "INFO")
+
+                    # Test portal HTTP responses
                     if self.verify_captive_portal_working(ip_address.split('/')[0]):
                         self.log("✓ Captive portal detection verified!", "SUCCESS")
                         self.log("\n📋 What happens next:", "INFO")
@@ -417,10 +515,11 @@ class PiNetAP(PiNetAPNetwork):
                         self.log("  • iPhone: Auto-opens Safari with portal page", "INFO")
                         self.log("  • Windows: Shows 'Action required' on network icon", "INFO")
                     else:
-                        self.log("⚠ Captive portal may not auto-trigger", "WARN")
+                        self.log("⚠️ Captive portal may not auto-trigger", "WARN")
                         self.log("  Check logs: sudo journalctl -u pinetap-portal -f", "INFO")
                 else:
-                    self.log(f"⚠ Captive portal setup failed", "WARN")
+                    self.log("⚠️ Captive portal setup failed", "WARN")
+                    self.log("  AP is working, but portal may not auto-open", "WARN")
 
             self.log("\n⏳ Waiting then verifying SSID broadcast...", "INFO")
             time.sleep(3)
@@ -428,15 +527,13 @@ class PiNetAP(PiNetAPNetwork):
             if ret == 0 and ssid in stdout:
                 self.log(f"✓ Verified: SSID '{ssid}' is being broadcast!", "SUCCESS")
             else:
-                self.log(f"⚠ Could not verify SSID broadcast", "WARN")
+                self.log(f"⚠️ Could not verify SSID broadcast", "WARN")
 
             return True
         else:
             self.log("Connection created but failed to activate", "ERROR")
             return False
 
-    # ... (keeping all remaining methods unchanged) ...
-    
     def remove_ap(self, con_name: str, restore_config: bool = True) -> bool:
         self.log(f"Removing access point: {con_name}")
 
@@ -654,12 +751,12 @@ class PiNetAP(PiNetAPNetwork):
         if has_captive:
             print("\n📱 Captive Portal Diagnostics:")
             print("-"*70)
-            
+
             # Check portal service
             ret, _, _ = self.run_command(["systemctl", "is-active", "pinetap-portal"], check=False)
             status = "✓ Running" if ret == 0 else "✗ Not Running"
             print(f"   Portal Service: {status}")
-            
+
             if ret != 0:
                 print("   Attempting to start portal...")
                 self.run_command(["systemctl", "start", "pinetap-portal"], check=False)
@@ -670,22 +767,22 @@ class PiNetAP(PiNetAPNetwork):
                 else:
                     print("   ✗ Failed to start portal")
                     print("\n   Check logs: sudo journalctl -u pinetap-portal -n 20")
-            
+
             # Check if portal responds
             ret, stdout, _ = self.run_command([
                 "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
                 "http://192.168.4.1/"
             ], check=False)
-            
+
             if ret == 0:
                 code = stdout.strip()
                 if code == "200":
                     print(f"   Portal HTTP: ✓ Responding (HTTP {code})")
                 else:
-                    print(f"   Portal HTTP: ⚠ Unexpected response (HTTP {code})")
+                    print(f"   Portal HTTP: ⚠️ Unexpected response (HTTP {code})")
             else:
                 print(f"   Portal HTTP: ✗ Not responding")
-            
+
             # Check DNS config
             if ap_interface:
                 dns_conf = Path(f"/etc/NetworkManager/dnsmasq.d/pinetap-captive-{ap_interface}.conf")
@@ -693,23 +790,23 @@ class PiNetAP(PiNetAPNetwork):
                     print(f"   DNS Config: ✓ Found ({dns_conf})")
                 else:
                     print(f"   DNS Config: ✗ Missing")
-            
+
             # Check iptables rules
             ret, stdout, _ = self.run_command([
                 "iptables", "-t", "nat", "-L", "PREROUTING", "-n"
             ], check=False)
-            
+
             if ret == 0 and ap_interface and ap_interface in stdout:
                 print(f"   iptables Rules: ✓ Found for {ap_interface}")
             else:
-                print(f"   iptables Rules: ⚠ May be missing")
-            
+                print(f"   iptables Rules: ⚠️ May be missing")
+
             # Check NetworkManager dnsmasq
             ret, _, _ = self.run_command(["pgrep", "-f", "dnsmasq.*NetworkManager"], check=False)
             if ret == 0:
                 print(f"   dnsmasq: ✓ Running for NetworkManager")
             else:
-                print(f"   dnsmasq: ⚠ Not running")
+                print(f"   dnsmasq: ⚠️ Not running")
 
         print("\n" + "="*70)
         print("💡 TROUBLESHOOTING TIPS:")
@@ -717,7 +814,7 @@ class PiNetAP(PiNetAPNetwork):
         if not is_active:
             print("⛔ Connection is not active!")
             print(f"   Try: sudo nmcli con up {target_conn}")
-        
+
         if has_captive:
             print("\n🔧 Captive Portal Tips:")
             print("   1. Restart portal: sudo systemctl restart pinetap-portal")
@@ -726,7 +823,7 @@ class PiNetAP(PiNetAPNetwork):
             print("   4. Test HTTP: curl http://google.com (from client device)")
             print("   5. View iptables: sudo iptables -t nat -L PREROUTING -n -v")
             print("   6. Reload NetworkManager: sudo systemctl reload NetworkManager")
-        
+
         print("\n🔧 Common fixes:")
         print("   1. Restart NetworkManager: sudo systemctl restart NetworkManager")
         print("   2. Check logs: journalctl -u NetworkManager -f")
@@ -921,7 +1018,7 @@ Examples:
 
         manager.save_original_system_state()
         manager.backup_nm_config()
-        
+
         # CRITICAL: Only modify NetworkManager to use dnsmasq if captive portal is enabled
         # Otherwise, NetworkManager's built-in DHCP (shared mode) is sufficient
         if args.captive_portal:
@@ -929,10 +1026,10 @@ Examples:
             manager.modify_nm_config(add_dnsmasq=True)
             manager.manage_dnsmasq_service("disable")
             manager.reload_networkmanager(delay=3)
-            
+
             # CRITICAL: Verify dnsmasq is actually running
             if not manager.ensure_dnsmasq_active():
-                manager.log("⚠ Warning: dnsmasq not running after NetworkManager reload", "WARN")
+                manager.log("⚠️ Warning: dnsmasq not running after NetworkManager reload", "WARN")
                 manager.log("  Captive portal detection may not work properly", "WARN")
                 manager.log("  Try: sudo systemctl restart NetworkManager", "INFO")
             else:

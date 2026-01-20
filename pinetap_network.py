@@ -14,6 +14,231 @@ from pinetap_core import PiNetAPCore
 class PiNetAPNetwork(PiNetAPCore):
     """Network configuration and captive portal management"""
 
+    def enable_ip_forwarding(self) -> bool:
+        """Enable IP forwarding for internet sharing"""
+        try:
+            self.log("Enabling IP forwarding...")
+            ret, _, _ = self.run_command([
+                "sysctl", "-w", "net.ipv4.ip_forward=1"
+            ], check=False)
+            
+            if ret == 0:
+                self.log("✓ IP forwarding enabled", "SUCCESS")
+                return True
+            else:
+                self.log("Failed to enable IP forwarding", "ERROR")
+                return False
+                
+        except Exception as e:
+            self.log(f"Failed to enable IP forwarding: {e}", "ERROR")
+            return False
+
+    def disable_ip_forwarding(self) -> bool:
+        """Disable IP forwarding for standalone mode"""
+        try:
+            self.log("Disabling IP forwarding...")
+            ret, _, _ = self.run_command([
+                "sysctl", "-w", "net.ipv4.ip_forward=0"
+            ], check=False)
+            
+            if ret == 0:
+                self.log("✓ IP forwarding disabled", "SUCCESS")
+                return True
+            else:
+                self.log("Failed to disable IP forwarding", "ERROR")
+                return False
+                
+        except Exception as e:
+            self.log(f"Failed to disable IP forwarding: {e}", "ERROR")
+            return False
+
+    def setup_nat_rules(self, ap_interface: str) -> bool:
+        """Setup NAT (masquerading) for internet sharing"""
+        try:
+            self.log(f"Setting up NAT for {ap_interface}...")
+            
+            # Enable masquerading for the AP interface
+            ret, _, _ = self.run_command([
+                "iptables", "-t", "nat", "-A", "POSTROUTING",
+                "-o", ap_interface, "!", "-d", "192.168.0.0/16",
+                "-j", "MASQUERADE"
+            ], check=False)
+            
+            if ret == 0:
+                self.log("✓ NAT rules configured", "SUCCESS")
+                return True
+            else:
+                self.log("Failed to setup NAT rules", "ERROR")
+                return False
+                
+        except Exception as e:
+            self.log(f"Failed to setup NAT: {e}", "ERROR")
+            return False
+
+    def block_forwarding_except_local(self, ap_interface: str) -> bool:
+        """Block IP forwarding except for local network (standalone mode)"""
+        try:
+            self.log(f"Blocking forwarding for {ap_interface} (standalone mode)...")
+            
+            # Flush FORWARD chain first
+            self.run_command([
+                "iptables", "-F", "FORWARD"
+            ], check=False)
+            
+            # Allow local network traffic on the AP interface
+            self.run_command([
+                "iptables", "-A", "FORWARD",
+                "-i", ap_interface,
+                "-d", "192.168.0.0/16",
+                "-j", "ACCEPT"
+            ], check=False)
+            
+            self.run_command([
+                "iptables", "-A", "FORWARD",
+                "-o", ap_interface,
+                "-s", "192.168.0.0/16",
+                "-j", "ACCEPT"
+            ], check=False)
+            
+            # Drop everything else (no internet forwarding)
+            self.run_command([
+                "iptables", "-A", "FORWARD",
+                "-i", ap_interface,
+                "-j", "DROP"
+            ], check=False)
+            
+            self.log("✓ Firewall configured for standalone mode", "SUCCESS")
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to block forwarding: {e}", "ERROR")
+            return False
+
+    def reload_networkmanager(self, delay: int = 2) -> bool:
+        """Reload NetworkManager and wait for it to settle"""
+        try:
+            self.log("Reloading NetworkManager...")
+            
+            ret, _, _ = self.run_command([
+                "systemctl", "reload", "NetworkManager"
+            ], check=False)
+            
+            if ret != 0:
+                self.log("Failed to reload NetworkManager", "WARN")
+                return False
+            
+            if delay > 0:
+                self.log(f"Waiting {delay} seconds for NetworkManager to settle...")
+                time.sleep(delay)
+            
+            self.log("✓ NetworkManager reloaded", "SUCCESS")
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to reload NetworkManager: {e}", "ERROR")
+            return False
+
+    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
+        """Configure DNS for captive portal - wrapper for _configure_captive_portal_dns"""
+        return self._configure_captive_portal_dns(ap_interface, ap_ip)
+
+    def verify_dns_hijacking(self, ap_ip: str) -> bool:
+        """Verify DNS hijacking is working"""
+        try:
+            self.log("Testing DNS hijacking...", "DEBUG")
+            
+            # Try to resolve a common domain using the AP's DNS
+            ret, stdout, _ = self.run_command([
+                "nslookup", "google.com", ap_ip
+            ], check=False)
+            
+            if ret == 0 and ap_ip in stdout:
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.log(f"DNS verification failed: {e}", "DEBUG")
+            return False
+
+    def verify_captive_portal_working(self, ap_ip: str) -> bool:
+        """Verify captive portal HTTP server is responding correctly"""
+        try:
+            # Test main portal page
+            ret, stdout, _ = self.run_command([
+                "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                f"http://{ap_ip}/"
+            ], check=False)
+            
+            if ret != 0 or stdout.strip() != "200":
+                return False
+            
+            # Test Android detection endpoint
+            ret, stdout, _ = self.run_command([
+                "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                f"http://{ap_ip}/generate_204"
+            ], check=False)
+            
+            if ret != 0 or stdout.strip() != "200":
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Portal verification failed: {e}", "DEBUG")
+            return False
+
+    def ensure_dnsmasq_active(self) -> bool:
+        """Ensure dnsmasq is running for NetworkManager (needed for captive portal)"""
+        try:
+            # Check if dnsmasq is running under NetworkManager
+            ret, stdout, _ = self.run_command(["pgrep", "-f", "dnsmasq.*NetworkManager"], check=False)
+            
+            if ret == 0 and stdout.strip():
+                self.log("✓ dnsmasq is active for NetworkManager", "SUCCESS")
+                return True
+            
+            self.log("dnsmasq not detected, attempting to start...", "WARN")
+            
+            # Try reloading NetworkManager to start dnsmasq
+            self.reload_networkmanager(delay=3)
+            
+            # Check again
+            ret, stdout, _ = self.run_command(["pgrep", "-f", "dnsmasq.*NetworkManager"], check=False)
+            
+            if ret == 0 and stdout.strip():
+                self.log("✓ dnsmasq started successfully", "SUCCESS")
+                return True
+            else:
+                self.log("⚠️ dnsmasq still not running", "WARN")
+                return False
+                
+        except Exception as e:
+            self.log(f"Failed to check dnsmasq: {e}", "ERROR")
+            return False
+
+    def _remove_captive_portal_iptables(self) -> bool:
+        """Remove captive portal iptables rules"""
+        try:
+            self.log("Removing captive portal iptables rules...")
+            
+            # Flush NAT PREROUTING rules
+            self.run_command([
+                "iptables", "-t", "nat", "-F", "PREROUTING"
+            ], check=False)
+            
+            # Flush NAT POSTROUTING rules
+            self.run_command([
+                "iptables", "-t", "nat", "-F", "POSTROUTING"
+            ], check=False)
+            
+            self.log("✓ Captive portal iptables rules removed", "SUCCESS")
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to remove iptables rules: {e}", "WARN")
+            return False
+
     def get_captive_portal_html(self, ap_ip: str, ssid: str, services: Optional[List[Dict]] = None) -> str:
         """Generate captive portal HTML page"""
         
@@ -152,19 +377,31 @@ class PiNetAPNetwork(PiNetAPCore):
             (self.CAPTIVE_PORTAL_DIR / "gen_204").write_text("")
             
             # Create captive portal server script with PROPER detection
-            server_script = f'''#!/usr/bin/env python3
+            # CRITICAL: Use raw string formatting to avoid indentation issues
+            server_script = '''#!/usr/bin/env python3
 import http.server
 import socketserver
 import os
+import sys
+import traceback
 
-PORT = {port}
-AP_IP = "{ap_ip}"
+PORT = ''' + str(port) + '''
+AP_IP = "''' + ap_ip + '''"
+
+# Force unbuffered output so we see logs immediately
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+
+print("[STARTUP] Captive Portal Server Starting...")
+print(f"[STARTUP] Port: {PORT}")
+print(f"[STARTUP] AP IP: {AP_IP}")
+print(f"[STARTUP] Working directory: {os.getcwd()}")
 
 class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """Log all requests for debugging"""
-        print(f"{{self.address_string()}} {{format % args}}")
+        print(f"{self.address_string()} - {format % args}")
 
     def do_HEAD(self):
         """Handle HEAD requests (used by Windows)"""
@@ -184,39 +421,47 @@ class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.lower()
-        print(f"Request: {{path}} from {{self.client_address[0]}}")
+        client_ip = self.client_address[0]
+        print(f"[REQUEST] {path} from {client_ip}")
         
         # === CRITICAL: Android Detection (MOST IMPORTANT) ===
-        if "/generate_204" in path or "/gen_204" in path:
-            # Return 200 with portal page instead of 204
-            # This triggers Android to show "Sign in to network" notification
-            print("→ Android detection endpoint hit!")
+        if "/generate_204" in path or "/gen_204" in path or "generate204" in path:
+            print("[ANDROID] Detection endpoint hit - returning 200 with portal!")
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.send_header("Connection", "close")
+            
             try:
                 with open("index.html", "rb") as f:
                     content = f.read()
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
+                print(f"[ANDROID] Sent {len(content)} bytes of portal HTML")
             except Exception as e:
-                print(f"Error reading index.html: {{e}}")
-                self.send_header("Content-Length", "0")
+                print(f"[ERROR] Reading index.html: {e}")
+                error_html = b"<html><body><h1>Captive Portal</h1></body></html>"
+                self.send_header("Content-Length", str(len(error_html)))
                 self.end_headers()
+                self.wfile.write(error_html)
             return
         
         # Android success check (after login)
         if "success.txt" in path:
-            print("→ Android success check")
+            print("[ANDROID] Success check - returning 204")
             self.send_response(204)
             self.end_headers()
             return
         
         # === iOS/macOS Detection ===
-        if "hotspot-detect" in path or "/library/test/success.html" in path:
-            print("→ iOS/macOS detection endpoint hit!")
+        if "hotspot-detect" in path or "/library/test/success.html" in path or "success.html" in path:
+            print("[iOS] Detection endpoint hit")
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             with open("index.html", "rb") as f:
                 content = f.read()
             self.send_header("Content-Length", str(len(content)))
@@ -226,10 +471,10 @@ class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
         
         # === Windows Detection ===
         if "ncsi.txt" in path:
-            # Return portal instead of "Microsoft NCSI"
-            print("→ Windows detection endpoint hit!")
+            print("[WINDOWS] Detection endpoint hit (ncsi.txt)")
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
             with open("index.html", "rb") as f:
                 content = f.read()
             self.send_header("Content-Length", str(len(content)))
@@ -238,9 +483,10 @@ class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
             return
             
         if "connecttest.txt" in path:
-            print("→ Windows connecttest hit!")
+            print("[WINDOWS] Detection endpoint hit (connecttest.txt)")
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
             with open("index.html", "rb") as f:
                 content = f.read()
             self.send_header("Content-Length", str(len(content)))
@@ -250,9 +496,10 @@ class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
 
         # === Firefox Detection ===
         if "canonical.html" in path or "detectportal" in path:
-            print("→ Firefox detection endpoint hit!")
+            print("[FIREFOX] Detection endpoint hit")
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
             with open("index.html", "rb") as f:
                 content = f.read()
             self.send_header("Content-Length", str(len(content)))
@@ -262,8 +509,10 @@ class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
 
         # === Normal browsing ===
         if path in ("/", "/index.html", "/splash.html"):
+            print("[PORTAL] Serving main page")
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
             with open("index.html", "rb") as f:
                 content = f.read()
             self.send_header("Content-Length", str(len(content)))
@@ -272,18 +521,35 @@ class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # === Everything else: redirect to portal ===
-        print(f"→ Unknown path, redirecting to portal")
+        print(f"[REDIRECT] Unknown path {path} -> portal")
         self.send_response(302)
-        self.send_header("Location", f"http://{{AP_IP}}/")
+        self.send_header("Location", "http://''' + ap_ip + '''/")
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
 
 if __name__ == "__main__":
-    os.chdir("{self.CAPTIVE_PORTAL_DIR}")
-    print(f"Starting captive portal on port {{PORT}}...")
-    print(f"Portal IP: {{AP_IP}}")
-    with socketserver.TCPServer(("", PORT), CaptivePortalHandler) as httpd:
-        print(f"Captive portal ready!")
-        httpd.serve_forever()
+    try:
+        os.chdir("''' + str(self.CAPTIVE_PORTAL_DIR) + '''")
+        print(f"[STARTUP] Changed to directory: {os.getcwd()}")
+        
+        # Verify files exist
+        if not os.path.exists("index.html"):
+            print("[ERROR] index.html not found!")
+            sys.exit(1)
+        else:
+            print("[STARTUP] index.html found")
+        
+        print(f"[STARTUP] Creating server on port {PORT}...")
+        with socketserver.TCPServer(("", PORT), CaptivePortalHandler) as httpd:
+            print(f"[READY] Captive portal is ACTIVE on {AP_IP}:{PORT}")
+            print("[READY] Waiting for connections...")
+            print("[READY] Press Ctrl+C to stop")
+            sys.stdout.flush()
+            httpd.serve_forever()
+    except Exception as e:
+        print(f"[FATAL ERROR] {e}")
+        traceback.print_exc()
+        sys.exit(1)
 '''
             
             self.CAPTIVE_PORTAL_SCRIPT.write_text(server_script)
@@ -310,16 +576,47 @@ WantedBy=multi-user.target
             self.CAPTIVE_PORTAL_SERVICE.write_text(service_content)
             self.log(f"Created systemd service: {self.CAPTIVE_PORTAL_SERVICE}")
             
-            # Configure interface-specific DNS (CRITICAL for captive portal detection!)
-            self._configure_captive_portal_dns(ap_interface, ap_ip)
-            
             # Configure iptables to intercept HTTP/HTTPS traffic
             self._setup_captive_portal_iptables(ap_interface, ap_ip)
             
             # Reload systemd and start service
             self.run_command(["systemctl", "daemon-reload"], check=False)
             self.run_command(["systemctl", "enable", "pinetap-portal"], check=False)
-            self.run_command(["systemctl", "restart", "pinetap-portal"], check=False)
+            
+            # Stop any existing instance first
+            self.run_command(["systemctl", "stop", "pinetap-portal"], check=False)
+            time.sleep(1)
+            
+            # Start the service
+            ret_start, stdout_start, stderr_start = self.run_command(
+                ["systemctl", "start", "pinetap-portal"], 
+                check=False
+            )
+            
+            if ret_start != 0:
+                self.log(f"Failed to start portal service: {stderr_start}", "ERROR")
+                self.log("Checking for errors...", "DEBUG")
+                
+                # Try to get more details
+                ret_status, stdout_status, _ = self.run_command(
+                    ["systemctl", "status", "pinetap-portal", "--no-pager"],
+                    check=False
+                )
+                if stdout_status:
+                    self.log(f"Service status:\n{stdout_status}", "DEBUG")
+                
+                # Try running the script directly to see the error
+                self.log("Testing portal script directly...", "DEBUG")
+                ret_test, stdout_test, stderr_test = self.run_command(
+                    ["timeout", "2", "python3", str(self.CAPTIVE_PORTAL_SCRIPT)],
+                    check=False
+                )
+                if stderr_test:
+                    self.log(f"Direct script error: {stderr_test}", "ERROR")
+                if stdout_test:
+                    self.log(f"Direct script output: {stdout_test}", "DEBUG")
+                
+                return False
             
             # Wait and verify
             time.sleep(2)
@@ -327,9 +624,6 @@ WantedBy=multi-user.target
             if ret == 0:
                 self.log(f"✓ Captive portal running at http://{ap_ip}:{port}", "SUCCESS")
                 self.log(f"  Portal will auto-popup on iOS, Android, Windows devices", "SUCCESS")
-                self.log(f"  DNS: Detection domains → {ap_ip}", "INFO")
-                self.log(f"  HTTP: Port 80 → Portal", "INFO")
-                self.log(f"  HTTPS: Port 443 → Portal (redirected)", "INFO")
                 
                 # Test the portal server
                 self.log("\n🧪 Testing portal server...", "INFO")
@@ -340,7 +634,7 @@ WantedBy=multi-user.target
                 if ret == 0 and stdout.strip() == "200":
                     self.log("  ✓ Portal responds correctly", "SUCCESS")
                 else:
-                    self.log(f"  ⚠ Portal response: {stdout}", "WARN")
+                    self.log(f"  ⚠️ Portal response: {stdout}", "WARN")
                 
                 return True
             else:
@@ -431,8 +725,11 @@ log-queries
 log-dhcp
 """
             
-            captive_dns_file = self.DNSMASQ_CONF_DIR / f"pinetap-captive-{ap_interface}.conf"
-            self.DNSMASQ_CONF_DIR.mkdir(parents=True, exist_ok=True)
+            # CRITICAL: NetworkManager reads from dnsmasq-shared.d, NOT dnsmasq.d
+            dnsmasq_shared_dir = Path("/etc/NetworkManager/dnsmasq-shared.d")
+            dnsmasq_shared_dir.mkdir(parents=True, exist_ok=True)
+            captive_dns_file = dnsmasq_shared_dir / f"pinetap-captive-{ap_interface}.conf"
+
             captive_dns_file.write_text(captive_dns_conf)
             
             self.log(f"✓ Enhanced DNS hijacking configured for {ap_interface}", "SUCCESS")
@@ -455,74 +752,77 @@ log-dhcp
                 self.log("iptables not found", "WARN")
                 return False
             
-            # Remove old rules if they exist (cleanup)
+            # CRITICAL: Flush existing NAT PREROUTING rules for clean slate
+            self.log("Flushing NAT PREROUTING rules...")
             self.run_command([
-                "iptables", "-t", "nat", "-D", "PREROUTING",
-                "-i", ap_interface, "-p", "tcp", "--dport", "80",
-                "-j", "DNAT", "--to-destination", f"{ap_ip}:80"
+                "iptables", "-t", "nat", "-F", "PREROUTING"
             ], check=False)
             
-            self.run_command([
-                "iptables", "-t", "nat", "-D", "PREROUTING",
-                "-i", ap_interface, "-p", "tcp", "--dport", "443",
-                "-j", "DNAT", "--to-destination", f"{ap_ip}:80"
-            ], check=False)
-            
-            # CRITICAL: Allow traffic destined for the portal itself FIRST
-            # This rule must come before the redirect rules
+            # Rule 1: FIRST, allow direct access to portal IP (most important!)
             ret, _, _ = self.run_command([
-                "iptables", "-t", "nat", "-I", "PREROUTING", "1",
-                "-i", ap_interface, "-p", "tcp", "-d", ap_ip,
+                "iptables", "-t", "nat", "-A", "PREROUTING",
+                "-i", ap_interface, 
+                "-d", ap_ip,
                 "-j", "ACCEPT"
             ], check=False)
             
             if ret == 0:
-                self.log(f"✓ Allowed direct traffic to portal ({ap_ip})")
+                self.log(f"✓ Rule 1: Direct portal access ({ap_ip}) allowed")
             
-            # Redirect HTTP (port 80) traffic to portal
+            # Rule 2: Redirect HTTP (port 80) to portal
             ret, _, stderr = self.run_command([
                 "iptables", "-t", "nat", "-A", "PREROUTING",
-                "-i", ap_interface, "-p", "tcp", "--dport", "80",
-                "-j", "DNAT", "--to-destination", f"{ap_ip}:80"
+                "-i", ap_interface, 
+                "-p", "tcp", 
+                "--dport", "80",
+                "!", "-d", ap_ip,  # Don't redirect if already going to portal
+                "-j", "DNAT", 
+                "--to-destination", f"{ap_ip}:80"
             ], check=False)
             
             if ret == 0:
-                self.log(f"✓ HTTP (80) traffic on {ap_interface} → {ap_ip}:80")
+                self.log(f"✓ Rule 2: HTTP (80) redirect active → {ap_ip}:80")
             else:
-                self.log(f"Failed to add HTTP redirect: {stderr}", "WARN")
+                self.log(f"Failed to add HTTP redirect: {stderr}", "ERROR")
                 return False
             
-            # Redirect HTTPS (port 443) traffic to portal (will show cert error, but that's expected)
-            ret, _, stderr = self.run_command([
+            # Rule 3: Redirect HTTPS (port 443) to portal (will show cert error)
+            ret, _, _ = self.run_command([
                 "iptables", "-t", "nat", "-A", "PREROUTING",
-                "-i", ap_interface, "-p", "tcp", "--dport", "443",
-                "-j", "DNAT", "--to-destination", f"{ap_ip}:80"
+                "-i", ap_interface, 
+                "-p", "tcp", 
+                "--dport", "443",
+                "!", "-d", ap_ip,
+                "-j", "DNAT", 
+                "--to-destination", f"{ap_ip}:80"
             ], check=False)
             
             if ret == 0:
-                self.log(f"✓ HTTPS (443) traffic on {ap_interface} → {ap_ip}:80")
+                self.log(f"✓ Rule 3: HTTPS (443) redirect active → {ap_ip}:80")
             else:
-                self.log(f"Warning: Could not redirect HTTPS: {stderr}", "WARN")
+                self.log(f"Warning: Could not redirect HTTPS", "WARN")
             
             # Allow INPUT to portal web server
             self.run_command([
-                "iptables", "-I", "INPUT", "1",
-                "-i", ap_interface, "-p", "tcp", "--dport", "80",
+                "iptables", "-A", "INPUT",
+                "-i", ap_interface, 
+                "-p", "tcp", 
+                "--dport", "80",
                 "-j", "ACCEPT"
             ], check=False)
             
             self.log("✓ HTTP interception configured", "SUCCESS")
-            self.log(f"  Traffic from {ap_interface} will be redirected to portal", "INFO")
             
             # Display current rules for verification
-            if self.verbose:
-                self.log("\n📋 Current NAT PREROUTING rules:", "DEBUG")
-                ret, stdout, _ = self.run_command([
-                    "iptables", "-t", "nat", "-L", "PREROUTING", "-n", "-v"
-                ], check=False)
-                if ret == 0:
-                    for line in stdout.split('\n')[:10]:  # First 10 lines
-                        self.log(f"  {line}", "DEBUG")
+            self.log("\n📋 Current NAT PREROUTING rules:", "INFO")
+            ret, stdout, _ = self.run_command([
+                "iptables", "-t", "nat", "-L", "PREROUTING", "-n", "-v", "--line-numbers"
+            ], check=False)
+            
+            if ret == 0:
+                for line in stdout.split('\n')[:10]:  # First 10 lines
+                    if ap_interface in line or ap_ip in line or "pkts" in line or "Chain" in line:
+                        self.log(f"  {line}", "INFO")
             
             self._save_iptables_rules()
             return True
@@ -565,10 +865,12 @@ log-dhcp
             # Remove iptables rules
             self._remove_captive_portal_iptables()
             
-            # Remove DNS configs
-            for conf_file in self.DNSMASQ_CONF_DIR.glob("pinetap-captive-*.conf"):
-                conf_file.unlink()
-                self.log(f"Removed DNS config: {conf_file}")
+            # Remove DNS configs from BOTH directories
+            for conf_dir in [self.DNSMASQ_CONF_DIR, Path("/etc/NetworkManager/dnsmasq-shared.d")]:
+                if conf_dir.exists():
+                    for conf_file in conf_dir.glob("pinetap-captive-*.conf"):
+                        conf_file.unlink()
+                        self.log(f"Removed DNS config: {conf_file}")
             
             # Remove portal directory
             if self.CAPTIVE_PORTAL_DIR.exists():
@@ -592,301 +894,4 @@ log-dhcp
             
         except Exception as e:
             self.log(f"Failed to remove captive portal: {e}", "WARN")
-            return False
-
-    def _remove_captive_portal_iptables(self) -> bool:
-        """Remove iptables HTTP redirect rules"""
-        try:
-            ret, _, _ = self.run_command(["which", "iptables"], check=False)
-            if ret != 0:
-                return True
-            
-            self.log("Removing HTTP redirect iptables rules...")
-            
-            # Get all WiFi interfaces
-            interfaces = self.get_available_interfaces()
-            wifi_interfaces = [name for name, info in interfaces.items() if info['type'] == 'wifi']
-            
-            # Remove rules for each interface
-            for iface in wifi_interfaces:
-                self.run_command([
-                    "iptables", "-t", "nat", "-D", "PREROUTING",
-                    "-i", iface, "-p", "tcp", "--dport", "80",
-                    "-j", "DNAT"
-                ], check=False)
-                
-                self.run_command([
-                    "iptables", "-t", "nat", "-D", "PREROUTING",
-                    "-i", iface, "-p", "tcp", "--dport", "443",
-                    "-j", "DNAT"
-                ], check=False)
-            
-            self.log("Cleaned up iptables redirect rules")
-            return True
-        except Exception as e:
-            self.log(f"Failed to remove iptables rules: {e}", "WARN")
-            return False
-
-    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
-        """Configure DNS for captive portal - interface specific"""
-        return self._configure_captive_portal_dns(ap_interface, ap_ip)
-
-    def ensure_dnsmasq_active(self) -> bool:
-        """
-        Ensure NetworkManager's dnsmasq is actually running
-        """
-        try:
-            self.log("Ensuring NetworkManager dnsmasq is active...")
-            
-            # Check if dnsmasq process is running under NetworkManager
-            ret, stdout, _ = self.run_command([
-                "pgrep", "-f", "dnsmasq.*NetworkManager"
-            ], check=False)
-            
-            if ret == 0:
-                self.log("✓ NetworkManager dnsmasq is running", "SUCCESS")
-                return True
-            else:
-                self.log("⚠ NetworkManager dnsmasq not detected, reloading...", "WARN")
-                self.reload_networkmanager(delay=3)
-                
-                # Check again
-                time.sleep(2)
-                ret, stdout, _ = self.run_command([
-                    "pgrep", "-f", "dnsmasq.*NetworkManager"
-                ], check=False)
-                
-                if ret == 0:
-                    self.log("✓ NetworkManager dnsmasq is now running", "SUCCESS")
-                    return True
-                else:
-                    self.log("✗ Failed to start NetworkManager dnsmasq", "ERROR")
-                    self.log("  Try: sudo systemctl restart NetworkManager", "INFO")
-                    return False
-                    
-        except Exception as e:
-            self.log(f"Error checking dnsmasq: {e}", "ERROR")
-            return False
-
-    def verify_captive_portal_working(self, ap_ip: str) -> bool:
-        """
-        Verify that captive portal is properly configured and responding
-        """
-        self.log("\n🧪 Testing captive portal detection...", "INFO")
-        
-        tests = [
-            ("Android", f"http://{ap_ip}/generate_204"),
-            ("iOS", f"http://{ap_ip}/hotspot-detect.html"),
-            ("Windows", f"http://{ap_ip}/ncsi.txt"),
-        ]
-        
-        all_passed = True
-        for name, url in tests:
-            ret, stdout, _ = self.run_command([
-                "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                url
-            ], check=False)
-            
-            if ret == 0:
-                code = stdout.strip()
-                if code == "200":
-                    self.log(f"  ✓ {name} detection: Working (HTTP {code})", "SUCCESS")
-                else:
-                    self.log(f"  ✗ {name} detection: Wrong code (HTTP {code})", "WARN")
-                    all_passed = False
-            else:
-                self.log(f"  ✗ {name} detection: Not responding", "ERROR")
-                all_passed = False
-        
-        return all_passed
-
-    # IP Forwarding and Firewall Management
-    def save_original_system_state(self):
-        """Save original system state before making changes"""
-        if self.SYSTEM_STATE_CONFIG.exists():
-            return
-        
-        state = {}
-        
-        try:
-            with open("/proc/sys/net/ipv4/ip_forward", "r") as f:
-                state['ip_forward'] = int(f.read().strip())
-        except Exception:
-            state['ip_forward'] = 0
-        
-        try:
-            ret, stdout, _ = self.run_command(["iptables", "-L", "FORWARD", "-n"], check=False)
-            if ret == 0:
-                for line in stdout.split('\n'):
-                    if line.startswith('Chain FORWARD'):
-                        if 'policy ACCEPT' in line:
-                            state['forward_policy'] = 'ACCEPT'
-                        elif 'policy DROP' in line:
-                            state['forward_policy'] = 'DROP'
-                        else:
-                            state['forward_policy'] = 'ACCEPT'
-                        break
-                else:
-                    state['forward_policy'] = 'ACCEPT'
-            else:
-                state['forward_policy'] = None
-        except Exception:
-            state['forward_policy'] = None
-        
-        state['saved_at'] = time.time()
-        
-        self.PINETAP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        import json
-        self.SYSTEM_STATE_CONFIG.write_text(json.dumps(state, indent=2))
-        self.log(f"Saved original system state")
-
-    def restore_original_system_state(self):
-        """Restore system to original state"""
-        if not self.SYSTEM_STATE_CONFIG.exists():
-            self.log("No saved system state, using defaults", "WARN")
-            self.enable_ip_forwarding()
-            self.restore_iptables_policy('ACCEPT')
-            return
-        
-        try:
-            import json
-            state = json.loads(self.SYSTEM_STATE_CONFIG.read_text())
-            
-            if state.get('ip_forward') == 1:
-                self.enable_ip_forwarding()
-            else:
-                self.disable_ip_forwarding()
-            
-            if state.get('forward_policy'):
-                self.restore_iptables_policy(state['forward_policy'])
-            
-            self.SYSTEM_STATE_CONFIG.unlink()
-            
-        except Exception as e:
-            self.log(f"Failed to restore system state: {e}", "ERROR")
-
-    def restore_iptables_policy(self, policy: str = 'ACCEPT'):
-        """Restore iptables FORWARD policy"""
-        try:
-            ret, _, _ = self.run_command(["which", "iptables"], check=False)
-            if ret != 0:
-                return
-            
-            # Clear all custom rules
-            self.run_command(["iptables", "-F", "FORWARD"], check=False)
-            self.run_command(["iptables", "-t", "nat", "-F"], check=False)
-            
-            # Set policy
-            self.run_command(["iptables", "-P", "FORWARD", policy], check=False)
-            self.log(f"iptables FORWARD policy set to {policy}")
-            
-        except Exception as e:
-            self.log(f"Could not restore iptables: {e}", "WARN")
-
-    def disable_ip_forwarding(self) -> bool:
-        """Disable IP forwarding"""
-        try:
-            self.run_command(["sysctl", "-w", "net.ipv4.ip_forward=0"], check=False)
-            self.log("IP forwarding disabled")
-            return True
-        except Exception as e:
-            self.log(f"Failed to disable IP forwarding: {e}", "WARN")
-            return False
-
-    def enable_ip_forwarding(self) -> bool:
-        """Enable IP forwarding for internet sharing"""
-        try:
-            self.run_command(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False)
-            self.log("IP forwarding enabled")
-            return True
-        except Exception as e:
-            self.log(f"Failed to enable IP forwarding: {e}", "WARN")
-            return False
-
-    def setup_nat_rules(self, ap_interface: str) -> bool:
-        """Setup NAT/MASQUERADE for internet sharing"""
-        try:
-            ret, _, _ = self.run_command(["which", "iptables"], check=False)
-            if ret != 0:
-                self.log("iptables not found", "WARN")
-                return False
-            
-            # Clear old rules
-            self.run_command(["iptables", "-t", "nat", "-F"], check=False)
-            self.run_command(["iptables", "-F", "FORWARD"], check=False)
-            
-            # Set FORWARD policy to ACCEPT
-            self.run_command(["iptables", "-P", "FORWARD", "ACCEPT"], check=False)
-            
-            # Add MASQUERADE rule for internet sharing
-            ret, _, stderr = self.run_command([
-                "iptables", "-t", "nat", "-A", "POSTROUTING",
-                "-o", "!", ap_interface,
-                "-j", "MASQUERADE"
-            ], check=False)
-            
-            if ret == 0:
-                self.log(f"✓ NAT enabled for {ap_interface}")
-            else:
-                self.log(f"Warning: Failed to add NAT rule: {stderr}", "WARN")
-            
-            # Allow forwarding from AP interface
-            self.run_command([
-                "iptables", "-A", "FORWARD",
-                "-i", ap_interface,
-                "-j", "ACCEPT"
-            ], check=False)
-            
-            # Allow related/established connections
-            self.run_command([
-                "iptables", "-A", "FORWARD",
-                "-m", "state", "--state", "RELATED,ESTABLISHED",
-                "-j", "ACCEPT"
-            ], check=False)
-            
-            return True
-        except Exception as e:
-            self.log(f"Failed to setup NAT: {e}", "ERROR")
-            return False
-
-    def block_forwarding_except_local(self, ap_interface: str) -> bool:
-        """
-        Block all forwarding to prevent internet sharing, but allow local AP network traffic.
-        CRITICAL FIX: Only block forwarding FROM ap_interface, not all forwarding.
-        """
-        try:
-            ret, _, _ = self.run_command(["which", "iptables"], check=False)
-            if ret != 0:
-                self.log("iptables not found, relying on disabled IP forwarding", "WARN")
-                return True
-            
-            # Clear NAT rules
-            self.run_command(["iptables", "-t", "nat", "-F"], check=False)
-            
-            # Clear FORWARD chain
-            self.run_command(["iptables", "-F", "FORWARD"], check=False)
-            
-            # CRITICAL FIX: Set default policy to ACCEPT, then add specific DROP rules
-            # This allows other interfaces (like uplink) to work normally
-            self.run_command(["iptables", "-P", "FORWARD", "ACCEPT"], check=False)
-            
-            # Block forwarding FROM the AP interface to other interfaces (prevents internet sharing)
-            # But this doesn't affect the uplink interface's ability to reach the internet
-            ret, _, stderr = self.run_command([
-                "iptables", "-I", "FORWARD", "1",
-                "-i", ap_interface, "!", "-o", ap_interface,
-                "-j", "DROP"
-            ], check=False)
-            
-            if ret == 0:
-                self.log(f"✓ Blocked forwarding from {ap_interface} (standalone mode)")
-                self.log(f"  Local AP traffic: ✓ Allowed", "INFO")
-                self.log(f"  Internet via AP: ✗ Blocked", "INFO")
-                self.log(f"  Other interfaces: ✓ Unaffected", "INFO")
-            else:
-                self.log(f"Warning: Failed to block forwarding: {stderr}", "WARN")
-            
-            return True
-        except Exception as e:
-            self.log(f"Failed to configure iptables: {e}", "WARN")
             return False

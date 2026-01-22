@@ -1,330 +1,299 @@
-# PiNetAP
+# PiNetAP - Raspberry Pi Network Access Point Manager
 
-Dual WiFi Access Point Manager for Raspberry Pi
-
-Turn your Raspberry Pi into a WiFi hotspot with internet sharing via a second WiFi adapter or Ethernet.
-Built for **Raspberry Pi OS Bookworm** using **NetworkManager**.
-
----
+A powerful Python tool for creating and managing WiFi access points on Raspberry Pi with advanced features like captive portals, custom service pages, and internet sharing.
 
 ## Features
 
-* One-command WiFi Access Point setup
-* **Multiple security modes**: Open, WPA2-PSK, WPA3-SAE
-* **Password validation**: Enforces 8–63 character requirement for secured networks
-* Dual WiFi support (one for AP, one for internet uplink)
-* Single WiFi + Ethernet support
-* **True standalone mode** (properly blocks internet sharing)
-* **Easy management**: List and remove all managed APs at once
-* **MAC address binding**: Survives interface name changes after reboot
-* Persistent configuration across reboots (`--autoconnect`)
-* Built-in diagnostic test suite with PASS / WARN / FAIL semantics
-* Automatic NetworkManager configuration backup and restore
-* Clean uninstallation with bulk removal option
-* Simplified and stable AP creation logic
-
----
-
-## Requirements
-
-* Raspberry Pi (any model with WiFi)
-* Raspberry Pi OS Bookworm or later
-* NetworkManager (default on Bookworm)
-* At least one WiFi interface
-* Root / sudo access
-
----
+- 🔌 **Dual WiFi Support** - Use one WiFi for internet, share via another
+- 📱 **Captive Portal** - Auto-popup portal page on connection (iOS, Android, Windows)
+- 🎨 **Custom Services** - Display your services via JSON configuration
+- 🌐 **Internet Sharing** - Share internet connection through the AP
+- 🔒 **Security Options** - Open, WPA2-PSK, or WPA3-SAE
+- 🚫 **Standalone Mode** - Create offline-only networks
+- 💾 **Persistent Config** - Auto-reconnect on reboot
 
 ## Quick Start
 
-### Check Your Interfaces
-
+### Prerequisites
 ```bash
-python pinetap.py interfaces
+# Raspberry Pi with:
+- Raspberry Pi OS (Debian-based)
+- NetworkManager installed
+- At least one WiFi interface
+- Root access (sudo)
 ```
 
-Shows all available interfaces and prints setup recommendations based on detected hardware.
-
-**View detailed info including MAC addresses:**
-
+### Installation
 ```bash
-python pinetap.py interfaces -d
+git clone <your-repo>
+cd pinetap
 ```
 
----
+### Basic Usage
 
-### Basic Setup Examples
-
-**Dual WiFi Setup** (one WiFi for AP, one for internet):
-
+#### 1. List Available Interfaces
 ```bash
-sudo python pinetap.py install --ssid MyHotspot --password SecurePass123 \
+sudo python pinetap.py interfaces -d
+```
+
+#### 2. Create a Simple Access Point
+```bash
+# Standalone AP (no internet)
+sudo python pinetap.py install \
+    --ssid MyHotspot \
+    --password MySecurePass123 \
+    --security wpa2-psk \
+    --ap-interface wlan0 \
+    --no-share \
+    --autoconnect
+```
+
+#### 3. Create AP with Internet Sharing
+```bash
+# Share internet from ethernet
+sudo python pinetap.py install \
+    --ssid MyHotspot \
+    --password MySecurePass123 \
     --security wpa2-psk \
     --ap-interface wlan1 \
-    --uplink-ssid HomeWiFi --uplink-password HomePassword \
+    --autoconnect
+
+# Share internet from another WiFi
+sudo python pinetap.py install \
+    --ssid MyHotspot \
+    --password MySecurePass123 \
+    --security wpa2-psk \
+    --ap-interface wlan1 \
     --uplink-interface wlan0 \
     --autoconnect
 ```
 
-**Single WiFi + Ethernet** (WiFi AP, Ethernet internet):
-
+#### 4. Create AP with Captive Portal
 ```bash
-sudo python pinetap.py install --ssid MyHotspot --password SecurePass123 \
+# Standalone with captive portal
+sudo python pinetap.py install \
+    --ssid MyServices \
+    --password MySecurePass123 \
     --security wpa2-psk \
-    --ap-interface wlan0 \
-    --autoconnect
-```
+    --ap-interface wlan1 \
+    --no-share \
+    --autoconnect \
+    --captive-portal
 
-**Standalone AP** (no internet sharing):
-
-```bash
-sudo python pinetap.py install --ssid LocalNetwork --password SecurePass123 \
+# With internet + captive portal + custom services
+sudo python pinetap.py install \
+    --ssid MyServices \
+    --password MySecurePass123 \
     --security wpa2-psk \
-    --ap-interface wlan0 --no-share \
-    --autoconnect
+    --ap-interface wlan1 \
+    --uplink-interface wlan0 \
+    --autoconnect \
+    --captive-portal \
+    --services-file ./services.json
 ```
 
-**Open Guest Network** (no password):
+## Custom Services
 
-```bash
-sudo python pinetap.py install --ssid GuestWiFi \
-    --security open \
-    --ap-interface wlan0 \
-    --autoconnect
+Create a `services.json` file to display custom services on the captive portal:
+```json
+[
+  {
+    "name": "Pi Admin",
+    "port": 80,
+    "path": "/",
+    "description": "Raspberry Pi administration"
+  },
+  {
+    "name": "File Server",
+    "port": 8000,
+    "path": "/files",
+    "description": "Access shared files"
+  },
+  {
+    "name": "Media Server",
+    "port": 32400,
+    "path": "/",
+    "description": "Plex media server"
+  }
+]
 ```
 
-**Maximum Security (WPA3):**
+## Command Reference
 
+### Install/Create AP
 ```bash
-sudo python pinetap.py install --ssid SecureAP --password SuperSecret123 \
-    --security wpa3-sae \
-    --ap-interface wlan0 \
-    --autoconnect
+sudo python pinetap.py install [OPTIONS]
+
+Required:
+  --ssid SSID                 Network name
+  --ap-interface INTERFACE    WiFi interface for AP (e.g., wlan1)
+
+Optional:
+  --password PASSWORD         Network password (required for WPA)
+  --security {open,wpa2-psk,wpa3-sae}  Security mode (default: wpa2-psk)
+  --uplink-interface INTERFACE  Internet source interface (e.g., wlan0, eth0)
+  --no-share                  Disable internet sharing (standalone mode)
+  --autoconnect               Auto-reconnect on reboot
+  --captive-portal            Enable captive portal
+  --services-file FILE        JSON file with custom services
+  --ip ADDRESS                AP IP address (default: 192.168.4.1/24)
+  --channel CHANNEL           WiFi channel (default: 3)
 ```
 
----
-
-## Usage
-
-### Commands
-
-#### List Interfaces
-
+### Manage APs
 ```bash
-python pinetap.py interfaces       # Basic view
-python pinetap.py interfaces -d    # Detailed view with MAC addresses
-```
-
----
-
-#### List Managed Connections
-
-View all PiNetAP-created access points:
-
-```bash
+# List managed connections
 sudo python pinetap.py managed
-```
 
-Shows:
-
-* Connection name
-* SSID
-* Interface used
-* Status (Active / Deleted)
-
----
-
-#### Install Access Point
-
-```bash
-sudo python pinetap.py install --ssid NETWORK_NAME \
-    [--password YOUR_PASSWORD] \
-    --security SECURITY_MODE \
-    --ap-interface wlan0 \
-    [OPTIONS]
-```
-
-**Required options:**
-
-* `--ssid TEXT` – SSID (network name)
-* `--security {open,wpa2-psk,wpa3-sae}` – Security mode (default: wpa2-psk)
-* `--ap-interface TEXT` – WiFi interface for AP
-
-**Security & password options:**
-
-* `--password TEXT`
-
-  * Required for `wpa2-psk` and `wpa3-sae`
-  * Must be omitted for `open`
-  * Length enforced: 8–63 characters
-
-**Uplink options:**
-
-* `--uplink-ssid TEXT`
-* `--uplink-password TEXT`
-* `--uplink-interface TEXT`
-
-**Configuration options:**
-
-* `--ip TEXT` – AP IP address (default: `192.168.4.1/24`)
-* `--channel INT` – WiFi channel (default: `3`)
-* `--mac TEXT` – Clone a custom MAC address
-* `--autoconnect` – Start automatically on boot
-* `--connection TEXT` – Custom connection name (default: `SSID-AP`)
-* `--no-share` – Disable internet sharing
-* `--test` – Run diagnostics after install
-
----
-
-## Security Modes
-
-### Open Network
-
-* No password
-* No encryption
-* Do **not** provide `--password`
-
-### WPA2-PSK (Default)
-
-* Widely supported
-* Password required (8–63 characters)
-
-### WPA3-SAE
-
-* Modern security standard
-* Requires newer client devices
-* Password required (8–63 characters)
-
----
-
-## Standalone Mode (`--no-share`)
-
-Creates a **local-only network**:
-
-* Clients can connect and get DHCP leases
-* Clients can reach the Raspberry Pi
-* Clients can talk to each other
-* Internet access is **fully blocked**
-
-**Implementation details:**
-
-* IP forwarding disabled persistently
-* No NAT or MASQUERADE rules
-* Survives reboot
-
----
-
-## Persistence and Autoconnect
-
-Without `--autoconnect`, connections exist but are inactive after reboot.
-
-With `--autoconnect`:
-
-* AP starts automatically
-* Uplink reconnects automatically
-* MAC binding ensures interface stability
-
----
-
-## MAC Address Binding
-
-USB WiFi adapters may change interface names after reboot.
-
-PiNetAP binds connections to MAC addresses so:
-
-* Interface renaming does not break APs
-* Hardware identity is preserved
-
-Mappings are stored in:
-
-```
-/etc/pinetap/interface_mapping.json
-```
-
----
-
-## Remove Access Points
-
-Remove one connection:
-
-```bash
+# Remove specific AP
 sudo python pinetap.py uninstall --connection MyHotspot-AP
-```
 
-Remove all PiNetAP-managed connections:
-
-```bash
+# Remove all APs
 sudo python pinetap.py uninstall --all
 ```
 
----
-
-## Diagnostics & Fixes
-
-Run tests:
-
+### Diagnostics
 ```bash
-python pinetap.py test --type all
+# Diagnose AP issues
+sudo python pinetap.py diagnose
+
+# Attempt auto-fix
+sudo python pinetap.py fix
 ```
 
-Diagnose a connection:
+## Architecture
 
-```bash
-sudo python pinetap.py diagnose --connection MyHotspot-AP
-```
+The codebase is split into focused modules:
 
-Auto-fix common issues:
-
-```bash
-sudo python pinetap.py fix --connection MyHotspot-AP
-```
-
----
+- **pinetap.py** (1139 lines) - Main CLI interface
+- **pinetap_network.py** (118 lines) - Network coordination
+- **pinetap_firewall.py** (355 lines) - iptables/NAT/forwarding
+- **pinetap_captiveportal.py** (454 lines) - Captive portal & DNS
+- **pinetap_portal_template.py** (290 lines) - HTML templates
+- **pinetap_core.py** - Base functionality (not shown)
 
 ## How It Works
 
-1. Validates security and password rules
-2. Backs up NetworkManager configuration
-3. Configures dnsmasq via NetworkManager
-4. Creates and activates AP connection
-5. Binds connection to interface MAC
-6. Configures IP addressing
-7. Enables or disables IP forwarding
-8. Enables NAT when sharing is active
-9. Registers connection as managed
+### Standalone Mode (`--no-share`)
+- Creates isolated WiFi network
+- No internet access for clients
+- Perfect for local services only
+- DNS hijacked to portal page
 
-Everything is handled through NetworkManager for stability.
+### Internet Sharing Mode
+- Enables IP forwarding
+- Sets up NAT rules
+- Configures FORWARD chain
+- Auto-detects internet interface
+- Clients have full internet access
 
----
+### Captive Portal (Dual Mode)
+- **With Internet**: Hijacks only detection domains, forwards other DNS to 8.8.8.8
+- **Without Internet**: Hijacks all DNS to portal page
+- Auto-popup on iOS, Android, Windows
+- Custom services display
+- No HTTP redirect when internet sharing enabled
 
-## Files & Data
+## Troubleshooting
 
-**System:**
+### No Internet Access
+```bash
+# Check IP forwarding
+cat /proc/sys/net/ipv4/ip_forward  # Should be 1
 
-* `/etc/NetworkManager/NetworkManager.conf`
-* `/etc/NetworkManager/NetworkManager.conf.backup`
-* `/etc/sysctl.conf`
+# Check NAT rules
+sudo iptables -t nat -L POSTROUTING -n -v
 
-**PiNetAP:**
+# Check FORWARD rules
+sudo iptables -L FORWARD -n -v
 
-* `/etc/pinetap/interface_mapping.json`
-* `/etc/pinetap/managed_connections.json`
+# Verify internet interface
+ip route show default
+```
 
----
+### DNS Not Working
+```bash
+# Check dnsmasq
+sudo pgrep -f dnsmasq
 
-## FAQ
+# Restart NetworkManager
+sudo systemctl restart NetworkManager
 
-**Can I run multiple APs at once?**
-No. One AP per WiFi interface.
+# Check DNS config
+ls /etc/NetworkManager/dnsmasq-shared.d/
+```
 
-**Does this replace hostapd/dnsmasq?**
-No. NetworkManager manages both internally.
+### Captive Portal Not Showing
+```bash
+# Check portal service
+sudo systemctl status pinetap-portal
 
-**Does `--no-share` break uplinks?**
-No. It only blocks client internet access.
+# View logs
+sudo journalctl -u pinetap-portal -f
 
-**Can I change passwords later?**
-Recreate the connection with the same SSID.
+# Restart portal
+sudo systemctl restart pinetap-portal
+```
 
-**Does WPA3 work with old devices?**
-No. Use WPA2-PSK for compatibility.
+## Examples
+
+### Home WiFi Extender
+```bash
+sudo python pinetap.py install \
+    --ssid HomeExtended \
+    --password HomePassword \
+    --security wpa2-psk \
+    --ap-interface wlan1 \
+    --uplink-ssid HomeWiFi \
+    --uplink-password OriginalPassword \
+    --uplink-interface wlan0 \
+    --autoconnect
+```
+
+### Offline File Server
+```bash
+sudo python pinetap.py install \
+    --ssid FileServer \
+    --password FilePass123 \
+    --security wpa2-psk \
+    --ap-interface wlan0 \
+    --no-share \
+    --autoconnect \
+    --captive-portal \
+    --services-file ./fileserver.json
+```
+
+### Public Hotspot with Services
+```bash
+sudo python pinetap.py install \
+    --ssid "Free WiFi" \
+    --security open \
+    --ap-interface wlan1 \
+    --uplink-interface eth0 \
+    --autoconnect \
+    --captive-portal \
+    --services-file ./public-services.json
+```
+
+## Requirements
+
+- Python 3.7+
+- NetworkManager
+- iptables
+- dnsmasq (managed by NetworkManager)
+- iw / wireless-tools
+
+## License
+
+[Your License Here]
+
+## Contributing
+
+Contributions welcome! Please open an issue or PR.
+
+## Support
+
+For issues, please run diagnostics and include output:
+```bash
+sudo python pinetap.py diagnose > diagnostics.txt
+```

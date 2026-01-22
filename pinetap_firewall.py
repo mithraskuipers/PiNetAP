@@ -4,6 +4,7 @@ PiNetAP Firewall - iptables and Firewall Management
 Contains all iptables rules for NAT, forwarding, and captive portal interception
 """
 
+from typing import Optional
 from pathlib import Path
 from pinetap_core import PiNetAPCore
 
@@ -11,27 +12,138 @@ from pinetap_core import PiNetAPCore
 class PiNetAPFirewall(PiNetAPCore):
     """Firewall and iptables management"""
 
-    def setup_nat_rules(self, ap_interface: str) -> bool:
-        """Setup NAT (masquerading) for internet sharing"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def setup_nat_rules(self, ap_interface: str, internet_interface: Optional[str] = None) -> bool:
+        """Setup NAT (masquerading) for internet sharing
+        
+        Args:
+            ap_interface: The AP interface (incoming traffic)
+            internet_interface: The internet interface (outgoing traffic). If None, auto-detect.
+        """
         try:
-            self.log(f"Setting up NAT for {ap_interface}...")
+            # Auto-detect internet interface if not specified
+            if not internet_interface:
+                self.log("Auto-detecting internet interface...", "DEBUG")
+                
+                # Method 1: Try to find default route interface
+                ret, stdout, _ = self.run_command(["ip", "route", "show", "default"], check=False)
+                if ret == 0 and stdout:
+                    self.log(f"Default route: {stdout.strip()}", "DEBUG")
+                    # Parse: "default via 192.168.1.1 dev eth0 ..." or "default via ... dev wlan0 proto dhcp ..."
+                    for word_idx, word in enumerate(stdout.split()):
+                        if word == "dev" and word_idx + 1 < len(stdout.split()):
+                            internet_interface = stdout.split()[word_idx + 1]
+                            break
+                
+                # Method 2: If still not found, look for any interface with a default route that's not the AP
+                if not internet_interface:
+                    self.log("Trying alternative detection method...", "DEBUG")
+                    ret, stdout, _ = self.run_command(["ip", "route"], check=False)
+                    if ret == 0:
+                        for line in stdout.split('\n'):
+                            if 'default' in line and ap_interface not in line:
+                                parts = line.split()
+                                if 'dev' in parts:
+                                    internet_interface = parts[parts.index('dev') + 1]
+                                    break
+                
+                if internet_interface and internet_interface != ap_interface:
+                    self.log(f"✓ Auto-detected internet interface: {internet_interface}", "SUCCESS")
+                else:
+                    self.log("Could not auto-detect internet interface", "WARN")
+                    self.log("Will use generic NAT rules (may not work without explicit internet source)", "WARN")
+                    
+                    # Set up generic masquerading without specific interface
+                    ret, _, _ = self.run_command([
+                        "iptables", "-t", "nat", "-A", "POSTROUTING",
+                        "-s", "192.168.0.0/16",
+                        "!", "-d", "192.168.0.0/16",
+                        "-j", "MASQUERADE"
+                    ], check=False)
+                    
+                    if ret == 0:
+                        self.log("✓ Generic NAT rules configured", "SUCCESS")
+                        self.log("⚠️ If internet sharing doesn't work, specify --uplink-interface", "WARN")
+                        return True
+                    else:
+                        self.log("Failed to setup NAT rules", "ERROR")
+                        return False
             
-            # Enable masquerading for the AP interface
-            ret, _, _ = self.run_command([
+            self.log(f"Setting up NAT: {ap_interface} (AP) → {internet_interface} (Internet)...")
+            
+            # CORRECT: Masquerade traffic going OUT through the internet interface
+            ret, _, stderr = self.run_command([
                 "iptables", "-t", "nat", "-A", "POSTROUTING",
-                "-o", ap_interface, "!", "-d", "192.168.0.0/16",
+                "-o", internet_interface,  # OUT through internet interface
                 "-j", "MASQUERADE"
             ], check=False)
             
             if ret == 0:
-                self.log("✓ NAT rules configured", "SUCCESS")
+                self.log(f"✓ NAT rules configured: traffic from AP will exit via {internet_interface}", "SUCCESS")
+                
+                # Verify the rule was added
+                ret2, stdout2, _ = self.run_command([
+                    "iptables", "-t", "nat", "-L", "POSTROUTING", "-n", "-v"
+                ], check=False)
+                if ret2 == 0 and internet_interface in stdout2:
+                    self.log(f"✓ NAT rule verified in iptables", "DEBUG")
+                
                 return True
             else:
-                self.log("Failed to setup NAT rules", "ERROR")
+                self.log(f"Failed to setup NAT rules: {stderr}", "ERROR")
                 return False
                 
         except Exception as e:
             self.log(f"Failed to setup NAT: {e}", "ERROR")
+            import traceback
+            self.log(traceback.format_exc(), "DEBUG")
+            return False
+
+    def allow_forwarding(self, ap_interface: str, internet_interface: Optional[str] = None) -> bool:
+        """Allow forwarding for internet sharing"""
+        try:
+            self.log(f"Setting up forwarding rules for internet sharing...", "DEBUG")
+            
+            # Flush FORWARD chain first for clean slate
+            self.run_command([
+                "iptables", "-F", "FORWARD"
+            ], check=False)
+            
+            # Allow established connections
+            self.run_command([
+                "iptables", "-A", "FORWARD",
+                "-m", "state", "--state", "RELATED,ESTABLISHED",
+                "-j", "ACCEPT"
+            ], check=False)
+            
+            # Allow traffic from AP interface
+            self.run_command([
+                "iptables", "-A", "FORWARD",
+                "-i", ap_interface,
+                "-j", "ACCEPT"
+            ], check=False)
+            
+            # If we know the internet interface, allow traffic to it specifically
+            if internet_interface:
+                self.run_command([
+                    "iptables", "-A", "FORWARD",
+                    "-o", internet_interface,
+                    "-j", "ACCEPT"
+                ], check=False)
+                self.log(f"✓ Forwarding enabled: {ap_interface} ↔ {internet_interface}", "SUCCESS")
+            else:
+                # Otherwise allow all forwarding
+                self.run_command([
+                    "iptables", "-P", "FORWARD", "ACCEPT"
+                ], check=False)
+                self.log(f"✓ Forwarding enabled: {ap_interface} ↔ all interfaces", "SUCCESS")
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to setup forwarding rules: {e}", "ERROR")
             return False
 
     def block_forwarding_except_local(self, ap_interface: str) -> bool:
@@ -73,9 +185,19 @@ class PiNetAPFirewall(PiNetAPCore):
             self.log(f"Failed to block forwarding: {e}", "ERROR")
             return False
 
-    def setup_captive_portal_iptables(self, ap_interface: str, ap_ip: str) -> bool:
-        """Setup iptables rules ONLY for the AP interface to intercept HTTP traffic"""
+    def setup_captive_portal_iptables(self, ap_interface: str, ap_ip: str, skip_http_redirect: bool = False) -> bool:
+        """Setup iptables rules ONLY for the AP interface to intercept HTTP traffic
+        
+        Args:
+            ap_interface: The AP interface
+            ap_ip: The AP IP address
+            skip_http_redirect: If True, don't redirect HTTP/HTTPS (for internet sharing mode)
+        """
         try:
+            if skip_http_redirect:
+                self.log(f"Skipping HTTP redirect (internet sharing mode) for {ap_interface}", "INFO")
+                return True
+                
             self.log(f"Setting up HTTP/HTTPS interception for {ap_interface}...")
             
             ret, _, _ = self.run_command(["which", "iptables"], check=False)

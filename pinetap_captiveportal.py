@@ -15,9 +15,10 @@ from pinetap_portal_template import get_captive_portal_html, get_portal_server_s
 class PiNetAPCaptivePortal(PiNetAPCore):
     """Captive portal and DNS management"""
 
-    def __init__(self):
-        super().__init__()
-        self.firewall = PiNetAPFirewall()
+    def __init__(self, firewall=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Use provided firewall instance or create new one
+        self.firewall = firewall if firewall is not None else PiNetAPFirewall(*args, **kwargs)
 
     def verify_dns_hijacking(self, ap_ip: str) -> bool:
         """Verify DNS hijacking is working"""
@@ -96,17 +97,70 @@ class PiNetAPCaptivePortal(PiNetAPCore):
             self.log(f"Failed to check dnsmasq: {e}", "ERROR")
             return False
 
-    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
+    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str, share_internet: bool = False) -> bool:
         """
-        FIXED: Configure DNS ONLY for the AP interface with enhanced detection.
-        This is CRITICAL for captive portal detection to work properly.
+        Configure DNS for the AP interface with captive portal detection.
+        
+        Args:
+            ap_interface: The AP interface
+            ap_ip: The AP IP address
+            share_internet: If True, forward non-captive DNS to real DNS servers
         """
         try:
-            self.log(f"Configuring enhanced captive DNS for {ap_interface}...")
+            self.log(f"Configuring captive DNS for {ap_interface} (internet sharing: {share_internet})...")
             
-            # CRITICAL: Enhanced DNS configuration for reliable captive portal detection
-            captive_dns_conf = f"""# PiNetAP Captive Portal DNS - Enhanced for Auto-Detection
-# CRITICAL: Only affects {ap_interface}, not other interfaces
+            if share_internet:
+                # Mode: Captive portal WITH internet access
+                # Only hijack captive portal detection domains, forward everything else
+                captive_dns_conf = f"""# PiNetAP Captive Portal DNS - With Internet Access
+# Hijack ONLY captive portal detection domains, forward rest to real DNS
+
+# Bind ONLY to the AP interface and its IP
+interface={ap_interface}
+listen-address={ap_ip}
+bind-interfaces
+
+# Forward all other queries to real DNS servers (Google DNS)
+server=8.8.8.8
+server=8.8.4.4
+
+# ONLY hijack captive portal detection domains (for auto-popup)
+# These return our portal IP to trigger detection
+
+# === ANDROID Detection ===
+address=/connectivitycheck.android.com/{ap_ip}
+address=/connectivitycheck.gstatic.com/{ap_ip}
+address=/clients3.google.com/{ap_ip}
+address=/clients4.google.com/{ap_ip}
+
+# === iOS/macOS Detection ===
+address=/captive.apple.com/{ap_ip}
+address=/www.apple.com/{ap_ip}
+
+# === Windows Detection ===
+address=/www.msftconnecttest.com/{ap_ip}
+address=/www.msftncsi.com/{ap_ip}
+address=/ipv6.msftconnecttest.com/{ap_ip}
+
+# === Firefox Detection ===
+address=/detectportal.firefox.com/{ap_ip}
+
+# Allow caching for better performance
+cache-size=1000
+
+# DHCP options to ensure our DNS is used
+dhcp-option={ap_interface},6,{ap_ip}
+dhcp-authoritative
+
+# Log queries for debugging
+log-queries
+log-dhcp
+"""
+            else:
+                # Mode: Captive portal WITHOUT internet (standalone mode)
+                # Hijack ALL DNS queries
+                captive_dns_conf = f"""# PiNetAP Captive Portal DNS - Standalone Mode (No Internet)
+# Hijack ALL DNS queries to show portal
 
 # Bind ONLY to the AP interface and its IP
 interface={ap_interface}
@@ -175,29 +229,86 @@ log-dhcp
             captive_dns_file = dnsmasq_shared_dir / f"pinetap-captive-{ap_interface}.conf"
             captive_dns_file.write_text(captive_dns_conf)
             
-            self.log(f"✓ Enhanced DNS hijacking configured for {ap_interface}", "SUCCESS")
-            self.log(f"  ALL DNS queries from {ap_interface} → {ap_ip}", "INFO")
-            self.log(f"  This triggers captive portal detection!", "INFO")
+            if share_internet:
+                self.log(f"✓ Captive DNS configured for {ap_interface} (WITH INTERNET)", "SUCCESS")
+                self.log(f"  Captive detection domains → {ap_ip}", "INFO")
+                self.log(f"  All other DNS → 8.8.8.8, 8.8.4.4", "INFO")
+            else:
+                self.log(f"✓ Captive DNS configured for {ap_interface} (STANDALONE)", "SUCCESS")
+                self.log(f"  ALL DNS queries → {ap_ip}", "INFO")
+            
             self.log(f"  Config: {captive_dns_file}", "INFO")
-            self.log(f"  ⚠️ IMPORTANT: Using dnsmasq-shared.d (required by NetworkManager)", "INFO")
             
             return True
         except Exception as e:
             self.log(f"Failed to configure DNS: {e}", "ERROR")
             return False
 
-    def setup_captive_portal(self, ap_interface: str, ap_ip: str, ssid: str, 
-                           services: Optional[List[Dict]] = None, port: int = 80) -> bool:
-        """Setup captive portal using lightweight Python HTTP server with DNS+iptables interception"""
+    def setup_captive_portal(self, ap_ip: str, ssid: str, ap_interface: str,
+                           services: Optional[List[Dict]] = None, port: int = 80,
+                           services_file: Optional[str] = None, share_internet: bool = False) -> bool:
+        """Setup captive portal using lightweight Python HTTP server with DNS+iptables interception
+        
+        Args:
+            ap_ip: IP address of the access point
+            ssid: SSID of the network
+            ap_interface: Network interface for AP
+            services: List of service dictionaries (optional)
+            port: Port for captive portal (default: 80)
+            services_file: Path to JSON file with services (optional, overrides services parameter)
+            share_internet: If True, skip HTTP redirect (for internet sharing mode)
+        """
         try:
             self.log("Setting up captive portal (pure Python, no additional packages needed)...")
-            return self._setup_offline_captive_portal(ap_interface, ap_ip, ssid, services, port)
+            
+            # Load services from JSON file if provided
+            if services_file:
+                services = self._load_services_from_json(services_file)
+            
+            return self._setup_offline_captive_portal(ap_ip, ssid, ap_interface, services, port, share_internet)
         except Exception as e:
             self.log(f"Failed to setup captive portal: {e}", "ERROR")
             return False
 
-    def _setup_offline_captive_portal(self, ap_interface: str, ap_ip: str, ssid: str,
-                                    services: Optional[List[Dict]] = None, port: int = 80) -> bool:
+    def _load_services_from_json(self, services_file: str) -> Optional[List[Dict]]:
+        """Load services configuration from JSON file"""
+        try:
+            import json
+            from pathlib import Path
+            
+            file_path = Path(services_file)
+            if not file_path.exists():
+                self.log(f"Services file not found: {services_file}", "ERROR")
+                return None
+            
+            with open(file_path, 'r') as f:
+                services = json.load(f)
+            
+            # Validate the structure
+            if not isinstance(services, list):
+                self.log("Services file must contain a JSON array", "ERROR")
+                return None
+            
+            for service in services:
+                if not isinstance(service, dict):
+                    self.log("Each service must be a JSON object", "ERROR")
+                    return None
+                if 'name' not in service:
+                    self.log("Each service must have a 'name' field", "ERROR")
+                    return None
+            
+            self.log(f"✓ Loaded {len(services)} services from {services_file}", "SUCCESS")
+            return services
+            
+        except json.JSONDecodeError as e:
+            self.log(f"Invalid JSON in services file: {e}", "ERROR")
+            return None
+        except Exception as e:
+            self.log(f"Failed to load services file: {e}", "ERROR")
+            return None
+
+    def _setup_offline_captive_portal(self, ap_ip: str, ssid: str, ap_interface: str,
+                                    services: Optional[List[Dict]] = None, port: int = 80, share_internet: bool = False) -> bool:
         """Setup offline captive portal - works like Starbucks WiFi with auto-redirect"""
         try:
             self.log("Setting up captive portal with auto-redirect (like Starbucks WiFi)...")
@@ -248,7 +359,8 @@ WantedBy=multi-user.target
             self.log(f"Created systemd service: {self.CAPTIVE_PORTAL_SERVICE}")
             
             # Configure iptables to intercept HTTP/HTTPS traffic
-            self.firewall.setup_captive_portal_iptables(ap_interface, ap_ip)
+            # Skip HTTP redirect if internet sharing is enabled (would break internet access)
+            self.firewall.setup_captive_portal_iptables(ap_interface, ap_ip, skip_http_redirect=share_internet)
             
             # Reload systemd and start service
             self.run_command(["systemctl", "daemon-reload"], check=False)

@@ -69,7 +69,7 @@ class PiNetAP(PiNetAPNetwork):
                     self.log("✓ IP forwarding restored", "SUCCESS")
 
             # Remove captive portal iptables rules
-            self._remove_captive_portal_iptables()
+            self.firewall.remove_captive_portal_iptables()
 
             # Flush custom iptables rules (be careful not to break system)
             self.log("Cleaning up iptables rules...")
@@ -305,9 +305,11 @@ class PiNetAP(PiNetAPNetwork):
         autoconnect: bool,
         con_name: Optional[str],
         share_internet: bool = True,
+        internet_interface: Optional[str] = None,
         security_mode: SecurityMode = SecurityMode.WPA2_PSK,
         captive_portal: bool = False,
-        portal_services: Optional[List[Dict]] = None
+        portal_services: Optional[List[Dict]] = None,
+        services_file: Optional[str] = None
     ) -> bool:
         available, msg, existing_conn = self.check_interface_available(ap_interface, for_ap=True, allow_reconnect=True)
 
@@ -344,10 +346,24 @@ class PiNetAP(PiNetAPNetwork):
 
         # Configure system settings based on internet sharing mode
         if share_internet:
+            self.log("=" * 60, "INFO")
+            self.log("CONFIGURING INTERNET SHARING", "INFO")
+            self.log("=" * 60, "INFO")
+            self.log(f"AP Interface: {ap_interface}", "INFO")
+            self.log(f"Internet Interface: {internet_interface if internet_interface else 'Auto-detect'}", "INFO")
+            
             self.enable_ip_forwarding()
             ipv4_method = "shared"
-            self.setup_nat_rules(ap_interface)
-            self.log("Configuring for internet sharing (NAT enabled)", "INFO")
+            
+            # Setup NAT rules
+            if not self.setup_nat_rules(ap_interface, internet_interface):
+                self.log("⚠️ NAT setup failed - internet sharing may not work!", "ERROR")
+            
+            # Setup FORWARD chain rules (CRITICAL!)
+            if not self.allow_forwarding(ap_interface, internet_interface):
+                self.log("⚠️ Forwarding setup failed - internet sharing may not work!", "ERROR")
+            
+            self.log("=" * 60, "INFO")
         else:
             # For standalone mode: disable forwarding and block forwarding
             self.disable_ip_forwarding()
@@ -445,7 +461,17 @@ class PiNetAP(PiNetAPNetwork):
         time.sleep(2)
 
         # Re-apply firewall rules after NetworkManager starts the connection
-        if not share_internet:
+        # NetworkManager may clear/modify iptables rules, so we need to reapply them
+        if share_internet:
+            self.log("Re-applying firewall rules for internet sharing...", "DEBUG")
+            # Re-enable IP forwarding (NetworkManager might have changed it)
+            self.enable_ip_forwarding()
+            # Re-apply NAT rules
+            self.setup_nat_rules(ap_interface, internet_interface)
+            # Re-apply FORWARD rules
+            self.allow_forwarding(ap_interface, internet_interface)
+            self.log("✓ Firewall rules re-applied after NetworkManager activation", "SUCCESS")
+        else:
             self.log("Re-applying firewall rules to prevent internet sharing...")
             self.block_forwarding_except_local(ap_interface)
 
@@ -474,7 +500,7 @@ class PiNetAP(PiNetAPNetwork):
 
                 # Step 1: Configure DNS FIRST (before portal server)
                 self.log("Step 1/5: Configuring DNS hijacking...")
-                self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0])
+                self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0], share_internet)
 
                 # Step 2: RESTART (not reload) NetworkManager to apply DNS config from dnsmasq-shared.d
                 self.log("Step 2/5: Restarting NetworkManager to apply DNS...")
@@ -494,7 +520,14 @@ class PiNetAP(PiNetAPNetwork):
 
                 # Step 5: Setup portal web server
                 self.log("Step 5/5: Starting captive portal web server...")
-                if self.setup_captive_portal(ip_address.split('/')[0], ssid, ap_interface, portal_services):
+                if self.setup_captive_portal(
+                    ip_address.split('/')[0], 
+                    ssid, 
+                    ap_interface, 
+                    portal_services,
+                    services_file=services_file,
+                    share_internet=share_internet
+                ):
                     self.log("✓ Captive portal web server active!", "SUCCESS")
 
                     # CRITICAL: Verify everything is working
@@ -906,10 +939,10 @@ Examples:
   sudo python pinetap.py install --ssid MyHotspot --password Pass12345 \\
        --security wpa2-psk --ap-interface wlan0 --autoconnect
 
-  # With captive portal
+  # With captive portal and custom services
   sudo python pinetap.py install --ssid MyServices --password Pass12345 \\
        --security wpa2-psk --ap-interface wlan0 --no-share --autoconnect \\
-       --captive-portal
+       --captive-portal --services-file ./services.json
 
   # Remove AP
   sudo python pinetap.py uninstall --connection MyHotspot-AP
@@ -941,7 +974,8 @@ Examples:
     install_parser.add_argument("--connection")
     install_parser.add_argument("--no-share", action="store_true")
     install_parser.add_argument("--captive-portal", action="store_true")
-    install_parser.add_argument("--portal-services", type=str)
+    install_parser.add_argument("--portal-services", type=str, help="(Deprecated) Use --services-file instead")
+    install_parser.add_argument("--services-file", type=str, help="Path to JSON file with custom services for captive portal")
 
     uninstall_parser = subparsers.add_parser("uninstall", help="Remove AP")
     uninstall_parser.add_argument("--connection")
@@ -1038,12 +1072,21 @@ Examples:
         else:
             manager.log("Using NetworkManager's built-in DHCP (no dnsmasq needed)")
 
+        # Handle services file (new method) or portal_services (deprecated)
         portal_services = None
-        if args.portal_services:
+        services_file = None
+        
+        if args.services_file:
+            # New method: use services_file parameter
+            services_file = args.services_file
+            manager.log(f"Using services file: {services_file}")
+        elif args.portal_services:
+            # Deprecated method: load JSON directly
             try:
                 with open(args.portal_services, 'r') as f:
                     portal_services = json.load(f)
-                manager.log(f"Loaded {len(portal_services)} service(s)")
+                manager.log(f"Loaded {len(portal_services)} service(s) from {args.portal_services}")
+                manager.log("⚠️ --portal-services is deprecated, use --services-file instead", "WARN")
             except Exception as e:
                 manager.log(f"Failed to load services: {e}", "WARN")
 
@@ -1057,9 +1100,11 @@ Examples:
             autoconnect=args.autoconnect,
             con_name=args.connection,
             share_internet=not args.no_share,
+            internet_interface=getattr(args, 'uplink_interface', None),
             security_mode=security_mode,
             captive_portal=args.captive_portal,
-            portal_services=portal_services
+            portal_services=portal_services,
+            services_file=services_file
         )
 
         if success:

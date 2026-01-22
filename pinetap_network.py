@@ -5,7 +5,7 @@ Contains IP forwarding, NAT, and NetworkManager management
 """
 
 import time
-from typing import Optional
+from typing import Optional, List, Dict
 from pinetap_core import PiNetAPCore
 from pinetap_firewall import PiNetAPFirewall
 from pinetap_captiveportal import PiNetAPCaptivePortal
@@ -14,10 +14,12 @@ from pinetap_captiveportal import PiNetAPCaptivePortal
 class PiNetAPNetwork(PiNetAPCore):
     """Network configuration and management"""
 
-    def __init__(self):
-        super().__init__()
-        self.firewall = PiNetAPFirewall()
-        self.captive_portal = PiNetAPCaptivePortal()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Create shared firewall instance
+        self.firewall = PiNetAPFirewall(*args, **kwargs)
+        # Pass firewall instance to captive portal to avoid duplication
+        self.captive_portal = PiNetAPCaptivePortal(firewall=self.firewall, *args, **kwargs)
 
     def enable_ip_forwarding(self) -> bool:
         """Enable IP forwarding for internet sharing"""
@@ -57,9 +59,13 @@ class PiNetAPNetwork(PiNetAPCore):
             self.log(f"Failed to disable IP forwarding: {e}", "ERROR")
             return False
 
-    def setup_nat_rules(self, ap_interface: str) -> bool:
+    def setup_nat_rules(self, ap_interface: str, internet_interface: Optional[str] = None) -> bool:
         """Setup NAT (masquerading) for internet sharing"""
-        return self.firewall.setup_nat_rules(ap_interface)
+        return self.firewall.setup_nat_rules(ap_interface, internet_interface)
+
+    def allow_forwarding(self, ap_interface: str, internet_interface: Optional[str] = None) -> bool:
+        """Allow forwarding for internet sharing"""
+        return self.firewall.allow_forwarding(ap_interface, internet_interface)
 
     def block_forwarding_except_local(self, ap_interface: str) -> bool:
         """Block IP forwarding except for local network (standalone mode)"""
@@ -89,9 +95,9 @@ class PiNetAPNetwork(PiNetAPCore):
             self.log(f"Failed to reload NetworkManager: {e}", "ERROR")
             return False
 
-    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str) -> bool:
+    def configure_captive_portal_dns(self, ap_interface: str, ap_ip: str, share_internet: bool = False) -> bool:
         """Configure DNS for captive portal - wrapper for captive portal module"""
-        return self.captive_portal.configure_captive_portal_dns(ap_interface, ap_ip)
+        return self.captive_portal.configure_captive_portal_dns(ap_interface, ap_ip, share_internet)
 
     def verify_dns_hijacking(self, ap_ip: str) -> bool:
         """Verify DNS hijacking is working"""
@@ -105,9 +111,21 @@ class PiNetAPNetwork(PiNetAPCore):
         """Ensure dnsmasq is running for NetworkManager (needed for captive portal)"""
         return self.captive_portal.ensure_dnsmasq_active()
 
-    def setup_captive_portal(self, ap_interface: str, ap_ip: str, ssid: str) -> bool:
-        """Setup captive portal with enhanced detection for auto-popup"""
-        return self.captive_portal.setup_captive_portal(ap_interface, ap_ip, ssid)
+    def setup_captive_portal(self, ap_ip: str, ssid: str, ap_interface: str,
+                           services: Optional[List[Dict]] = None, port: int = 80,
+                           services_file: Optional[str] = None, share_internet: bool = False) -> bool:
+        """Setup captive portal with enhanced detection for auto-popup
+        
+        Args:
+            ap_ip: IP address of the access point
+            ssid: SSID of the network
+            ap_interface: Network interface for AP
+            services: List of service dictionaries (optional)
+            port: Port for captive portal (default: 80)
+            services_file: Path to JSON file with services (optional, overrides services parameter)
+            share_internet: If True, skip HTTP redirect (for internet sharing mode)
+        """
+        return self.captive_portal.setup_captive_portal(ap_ip, ssid, ap_interface, services, port, services_file, share_internet)
 
     def remove_captive_portal(self) -> bool:
         """Remove captive portal files and service"""

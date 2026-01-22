@@ -12,9 +12,9 @@
     "description": "Access shared files"
   },
   {
-    "name": "Web Application",
-    "port": 3000,
+    "name": "IT-tools",
+    "port": 7979,
     "path": "/",
-    "description": "Custom web app"
+    "description": "IT-tools"
   }
 ]

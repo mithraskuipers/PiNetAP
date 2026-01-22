@@ -283,14 +283,6 @@ sudo python pinetap.py install \
 - dnsmasq (managed by NetworkManager)
 - iw / wireless-tools
 
-## License
-
-[Your License Here]
-
-## Contributing
-
-Contributions welcome! Please open an issue or PR.
-
 ## Support
 
 For issues, please run diagnostics and include output:

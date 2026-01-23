@@ -318,6 +318,22 @@ log-dhcp
             # Create portal directory
             self.CAPTIVE_PORTAL_DIR.mkdir(parents=True, exist_ok=True)
             
+            # CRITICAL FIX: Copy portal_template.html to portal directory for regeneration
+            import inspect
+            import shutil
+            
+            # Find the directory where the template function is defined
+            template_source_dir = Path(inspect.getfile(get_captive_portal_html)).parent
+            template_source = template_source_dir / "portal_template.html"
+            template_dest = self.CAPTIVE_PORTAL_DIR / "portal_template.html"
+            
+            if template_source.exists():
+                shutil.copy2(template_source, template_dest)
+                self.log(f"✓ Copied portal template to {template_dest}", "DEBUG")
+            else:
+                self.log(f"⚠️ Warning: portal_template.html not found at {template_source}", "WARN")
+                self.log(f"  Auto-reload may not work correctly", "WARN")
+            
             # Determine services location
             portal_services_file = None
             if services_file:

@@ -87,11 +87,13 @@ def regenerate_portal_html():
         # Read SSID from metadata file if exists
         metadata_path = Path(PORTAL_DIR) / "portal_metadata.json"
         ssid = "PiNetAP"
+        ap_ip = AP_IP
         
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
                 ssid = metadata.get('ssid', ssid)
+                ap_ip = metadata.get('ap_ip', ap_ip)
         
         # Read the HTML template
         template_path = Path(PORTAL_DIR) / "portal_template.html"
@@ -106,7 +108,7 @@ def regenerate_portal_html():
         service_cards = ""
         for svc in services:
             port_display = f":{svc['port']}" if svc.get('port', 80) != 80 else ""
-            url = f"http://{AP_IP}{port_display}{svc.get('path', '/')}"
+            url = f"http://{ap_ip}{port_display}{svc.get('path', '/')}"
             service_cards += f"""
             <div class="service-card">
                 <h3>{svc['name']}</h3>
@@ -115,9 +117,9 @@ def regenerate_portal_html():
             </div>
         """
         
-        # Replace placeholders
+        # Replace ALL placeholders - THIS WAS THE BUG!
         html = html.replace('{{SSID}}', ssid)
-        html = html.replace('{{AP_IP}}', AP_IP)
+        html = html.replace('{{AP_IP}}', ap_ip)
         html = html.replace('{{SERVICE_CARDS}}', service_cards)
         
         # Add auto-update indicator to the services header
@@ -144,6 +146,7 @@ def regenerate_portal_html():
             f.write(html)
         
         print(f"[HTML] Regenerated portal page with {len(services)} service(s)")
+        print(f"[HTML] SSID: {ssid}, AP IP: {ap_ip}")
         
     except Exception as e:
         print(f"[HTML] ERROR: Failed to regenerate HTML: {e}")

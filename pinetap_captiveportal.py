@@ -5,6 +5,7 @@ Contains captive portal setup, DNS hijacking, and portal server management
 """
 
 import time
+import json
 from typing import Optional, List, Dict
 from pathlib import Path
 from pinetap_core import PiNetAPCore
@@ -253,9 +254,9 @@ log-dhcp
             ap_ip: IP address of the access point
             ssid: SSID of the network
             ap_interface: Network interface for AP
-            services: List of service dictionaries (optional)
+            services: List of service dictionaries (optional, deprecated - use services_file)
             port: Port for captive portal (default: 80)
-            services_file: Path to JSON file with services (optional, overrides services parameter)
+            services_file: Path to JSON file with services (optional, enables auto-reload)
             share_internet: If True, skip HTTP redirect (for internet sharing mode)
         """
         try:
@@ -265,7 +266,7 @@ log-dhcp
             if services_file:
                 services = self._load_services_from_json(services_file)
             
-            return self._setup_offline_captive_portal(ap_ip, ssid, ap_interface, services, port, share_internet)
+            return self._setup_offline_captive_portal(ap_ip, ssid, ap_interface, services, port, services_file, share_internet)
         except Exception as e:
             self.log(f"Failed to setup captive portal: {e}", "ERROR")
             return False
@@ -308,21 +309,68 @@ log-dhcp
             return None
 
     def _setup_offline_captive_portal(self, ap_ip: str, ssid: str, ap_interface: str,
-                                    services: Optional[List[Dict]] = None, port: int = 80, share_internet: bool = False) -> bool:
+                                    services: Optional[List[Dict]] = None, port: int = 80, 
+                                    services_file: Optional[str] = None, share_internet: bool = False) -> bool:
         """Setup offline captive portal - works like Starbucks WiFi with auto-redirect"""
         try:
-            self.log("Setting up captive portal with auto-redirect (like Starbucks WiFi)...")
+            self.log("Setting up captive portal with auto-redirect and auto-reload...")
             
             # Create portal directory
             self.CAPTIVE_PORTAL_DIR.mkdir(parents=True, exist_ok=True)
             
-            # Generate splash page HTML
+            # Determine services location
+            portal_services_file = None
+            if services_file:
+                # Use the ORIGINAL file path - don't copy!
+                services_path = Path(services_file).resolve()
+                
+                if not services_path.exists():
+                    self.log(f"Services file not found: {services_file}", "ERROR")
+                    return False
+                
+                portal_services_file = str(services_path)
+                
+                self.log(f"✓ Monitoring services file: {portal_services_file}", "SUCCESS")
+                self.log("  Portal will auto-reload when you edit this file!", "INFO")
+                
+                # Load services to validate and create initial HTML
+                services = self._load_services_from_json(services_file)
+                
+            elif services:
+                # Save provided services to portal directory
+                portal_services_path = self.CAPTIVE_PORTAL_DIR / "services.json"
+                portal_services_path.write_text(json.dumps(services, indent=2))
+                portal_services_file = str(portal_services_path)
+                self.log(f"Services saved to {portal_services_path}")
+            else:
+                # No services provided - create default services file in portal directory
+                portal_services_path = self.CAPTIVE_PORTAL_DIR / "services.json"
+                default_services = [
+                    {"name": "Router Admin", "port": 80, "path": "/", "description": "Web interface"}
+                ]
+                portal_services_path.write_text(json.dumps(default_services, indent=2))
+                portal_services_file = str(portal_services_path)
+                services = default_services
+                self.log(f"Created default services file: {portal_services_path}")
+            
+            # Save portal metadata (SSID, IP, etc.) for dynamic HTML generation
+            metadata = {
+                'ssid': ssid,
+                'ap_ip': ap_ip,
+                'ap_interface': ap_interface,
+                'share_internet': share_internet,
+                'services_file': portal_services_file
+            }
+            metadata_file = self.CAPTIVE_PORTAL_DIR / "portal_metadata.json"
+            metadata_file.write_text(json.dumps(metadata, indent=2))
+            
+            # Generate initial splash page HTML
             html_content = get_captive_portal_html(ap_ip, ssid, services)
             splash_page = self.CAPTIVE_PORTAL_DIR / "splash.html"
             splash_page.write_text(html_content)
             index_page = self.CAPTIVE_PORTAL_DIR / "index.html"
             index_page.write_text(html_content)
-            self.log(f"Created portal pages: {splash_page} and {index_page}")
+            self.log(f"Created initial portal pages: {splash_page} and {index_page}")
             
             # Create SUCCESS page for Android (critical!)
             success_page = self.CAPTIVE_PORTAL_DIR / "success.txt"
@@ -332,15 +380,15 @@ log-dhcp
             (self.CAPTIVE_PORTAL_DIR / "generate_204").write_text("")
             (self.CAPTIVE_PORTAL_DIR / "gen_204").write_text("")
             
-            # Create captive portal server script
-            server_script = get_portal_server_script(ap_ip, port, self.CAPTIVE_PORTAL_DIR)
+            # Create captive portal server script with auto-reload
+            server_script = get_portal_server_script(ap_ip, port, self.CAPTIVE_PORTAL_DIR, portal_services_file)
             self.CAPTIVE_PORTAL_SCRIPT.write_text(server_script)
             self.CAPTIVE_PORTAL_SCRIPT.chmod(0o755)
-            self.log(f"Created portal server: {self.CAPTIVE_PORTAL_SCRIPT}")
+            self.log(f"Created portal server with auto-reload: {self.CAPTIVE_PORTAL_SCRIPT}")
             
             # Create systemd service
             service_content = f"""[Unit]
-Description=PiNetAP Captive Portal (Auto-redirect)
+Description=PiNetAP Captive Portal (Auto-redirect & Auto-reload)
 After=network.target NetworkManager.service
 
 [Service]
@@ -407,6 +455,9 @@ WantedBy=multi-user.target
             if ret == 0:
                 self.log(f"✓ Captive portal running at http://{ap_ip}:{port}", "SUCCESS")
                 self.log(f"  Portal will auto-popup on iOS, Android, Windows devices", "SUCCESS")
+                if portal_services_file:
+                    self.log(f"  ⚡ Auto-reload enabled: monitoring {portal_services_file}", "SUCCESS")
+                    self.log(f"  📝 Edit your services file and refresh browser to see changes!", "INFO")
                 
                 # Test the portal server
                 self.log("\n🧪 Testing portal server...", "INFO")
@@ -504,9 +555,50 @@ WantedBy=multi-user.target
                 )
                 if ret2 == 0:
                     status["details"] = stdout2
+                
+                # Check metadata for original services file path
+                metadata_file = self.CAPTIVE_PORTAL_DIR / "portal_metadata.json"
+                if metadata_file.exists():
+                    try:
+                        import json
+                        metadata = json.loads(metadata_file.read_text())
+                        services_file = metadata.get('services_file')
+                        if services_file and Path(services_file).exists():
+                            status["services_file"] = services_file
+                            status["auto_reload"] = True
+                    except Exception:
+                        pass
             
             return status
             
         except Exception as e:
             self.log(f"Failed to get portal status: {e}", "ERROR")
             return {"active": False, "error": str(e)}
+
+    def update_portal_services(self, services_file: str) -> bool:
+        """Update the portal services configuration
+        
+        Note: With the new design, you just edit your original services.json file.
+        This method is kept for backward compatibility but is no longer needed.
+        
+        Args:
+            services_file: Path to new services JSON file
+            
+        Returns:
+            True if update successful
+        """
+        try:
+            # Validate the new services file
+            services = self._load_services_from_json(services_file)
+            if services is None:
+                return False
+            
+            self.log(f"✓ Services file validated: {services_file}", "SUCCESS")
+            self.log("  Portal will auto-reload on next request", "INFO")
+            self.log("  Simply edit your services.json file to update the portal!", "INFO")
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to validate services: {e}", "ERROR")
+            return False

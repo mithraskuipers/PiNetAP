@@ -3,7 +3,7 @@
 PiNetAP - Dual WiFi Access Point Manager for Raspberry Pi
 Main CLI interface and AP management
 
-FIXED: Enhanced captive portal setup with verification
+ENHANCED: Captive portal with automatic service JSON reloading
 
 Usage: sudo python pinetap.py [command] [options]
 """
@@ -529,6 +529,25 @@ class PiNetAP(PiNetAPNetwork):
                     share_internet=share_internet
                 ):
                     self.log("✓ Captive portal web server active!", "SUCCESS")
+                    
+                    if services_file:
+                        self.log("\n⚡ AUTO-RELOAD ENABLED", "SUCCESS")
+                        self.log("=" * 60, "INFO")
+                        # Get the actual path being monitored from metadata
+                        metadata_file = Path("/var/www/pinetap-portal/portal_metadata.json")
+                        monitored_path = services_file
+                        if metadata_file.exists():
+                            try:
+                                import json
+                                metadata = json.loads(metadata_file.read_text())
+                                monitored_path = metadata.get('services_file', services_file)
+                            except Exception:
+                                pass
+                        
+                        self.log(f"📄 Monitoring: {monitored_path}", "INFO")
+                        self.log(f"🔄 Edit this file to update portal instantly!", "INFO")
+                        self.log(f"   Changes appear on next browser refresh - no restart needed", "INFO")
+                        self.log("=" * 60, "INFO")
 
                     # CRITICAL: Verify everything is working
                     time.sleep(3)
@@ -817,6 +836,27 @@ class PiNetAP(PiNetAPNetwork):
             else:
                 print(f"   Portal HTTP: ✗ Not responding")
 
+            # Check for auto-reload feature
+            services_file = Path("/var/www/pinetap-portal/services.json")
+            if services_file.exists():
+                print(f"   Auto-Reload: ✓ Enabled ({services_file})")
+            else:
+                # Check metadata for original file path
+                metadata_file = Path("/var/www/pinetap-portal/portal_metadata.json")
+                if metadata_file.exists():
+                    try:
+                        import json
+                        metadata = json.loads(metadata_file.read_text())
+                        original_file = metadata.get('services_file')
+                        if original_file and Path(original_file).exists():
+                            print(f"   Auto-Reload: ✓ Enabled (monitoring: {original_file})")
+                        else:
+                            print(f"   Auto-Reload: ✗ Not configured")
+                    except Exception:
+                        print(f"   Auto-Reload: ✗ Not configured")
+                else:
+                    print(f"   Auto-Reload: ✗ Not configured")
+
             # Check DNS config
             if ap_interface:
                 dns_conf = Path(f"/etc/NetworkManager/dnsmasq.d/pinetap-captive-{ap_interface}.conf")
@@ -857,6 +897,24 @@ class PiNetAP(PiNetAPNetwork):
             print("   4. Test HTTP: curl http://google.com (from client device)")
             print("   5. View iptables: sudo iptables -t nat -L PREROUTING -n -v")
             print("   6. Reload NetworkManager: sudo systemctl reload NetworkManager")
+            
+            services_file = Path("/var/www/pinetap-portal/services.json")
+            if services_file.exists():
+                print(f"   7. Update services: edit {services_file}")
+                print("      Changes take effect on next page load (auto-reload enabled)")
+            else:
+                # Check metadata for original file path
+                metadata_file = Path("/var/www/pinetap-portal/portal_metadata.json")
+                if metadata_file.exists():
+                    try:
+                        import json
+                        metadata = json.loads(metadata_file.read_text())
+                        original_file = metadata.get('services_file')
+                        if original_file and Path(original_file).exists():
+                            print(f"   7. Update services: edit {original_file}")
+                            print("      Changes take effect on next page load (auto-reload enabled)")
+                    except Exception:
+                        pass
 
         print("\n🔧 Common fixes:")
         print("   1. Restart NetworkManager: sudo systemctl restart NetworkManager")
@@ -939,7 +997,7 @@ Examples:
   sudo python pinetap.py install --ssid MyHotspot --password Pass12345 \\
        --security wpa2-psk --ap-interface wlan0 --autoconnect
 
-  # With captive portal and custom services
+  # With captive portal and auto-reload services
   sudo python pinetap.py install --ssid MyServices --password Pass12345 \\
        --security wpa2-psk --ap-interface wlan0 --no-share --autoconnect \\
        --captive-portal --services-file ./services.json
@@ -975,7 +1033,7 @@ Examples:
     install_parser.add_argument("--no-share", action="store_true")
     install_parser.add_argument("--captive-portal", action="store_true")
     install_parser.add_argument("--portal-services", type=str, help="(Deprecated) Use --services-file instead")
-    install_parser.add_argument("--services-file", type=str, help="Path to JSON file with custom services for captive portal")
+    install_parser.add_argument("--services-file", type=str, help="Path to JSON file with custom services for captive portal (auto-reload enabled)")
 
     uninstall_parser = subparsers.add_parser("uninstall", help="Remove AP")
     uninstall_parser.add_argument("--connection")
@@ -1080,6 +1138,7 @@ Examples:
             # New method: use services_file parameter
             services_file = args.services_file
             manager.log(f"Using services file: {services_file}")
+            manager.log("⚡ Auto-reload enabled: portal updates when JSON changes", "INFO")
         elif args.portal_services:
             # Deprecated method: load JSON directly
             try:

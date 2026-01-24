@@ -2,6 +2,8 @@
 """
 PiNetAP Captive Portal - DNS Configuration and HTTP Server Management
 Contains captive portal setup, DNS hijacking, and portal server management
+
+FIXED: Ensures all {{AP_IP}} placeholders are replaced with actual IP
 """
 
 import time
@@ -104,7 +106,7 @@ class PiNetAPCaptivePortal(PiNetAPCore):
         
         Args:
             ap_interface: The AP interface
-            ap_ip: The AP IP address
+            ap_ip: The AP IP address (should be clean, no /24)
             share_internet: If True, forward non-captive DNS to real DNS servers
         """
         try:
@@ -251,7 +253,7 @@ log-dhcp
         """Setup captive portal using lightweight Python HTTP server with DNS+iptables interception
         
         Args:
-            ap_ip: IP address of the access point
+            ap_ip: IP address of the access point (may include /24)
             ssid: SSID of the network
             ap_interface: Network interface for AP
             services: List of service dictionaries (optional, deprecated - use services_file)
@@ -315,6 +317,10 @@ log-dhcp
         try:
             self.log("Setting up captive portal with auto-redirect and auto-reload...")
             
+            # CRITICAL FIX: Strip /24 or any CIDR notation from ap_ip FIRST!
+            ap_ip_clean = ap_ip.split('/')[0]
+            self.log(f"[DEBUG] Original ap_ip: '{ap_ip}' -> Clean: '{ap_ip_clean}'", "DEBUG")
+            
             # Create portal directory
             self.CAPTIVE_PORTAL_DIR.mkdir(parents=True, exist_ok=True)
             
@@ -370,23 +376,45 @@ log-dhcp
                 self.log(f"Created default services file: {portal_services_path}")
             
             # Save portal metadata (SSID, IP, etc.) for dynamic HTML generation
+            # CRITICAL FIX: Use ap_ip_clean (without /24) in metadata!
             metadata = {
                 'ssid': ssid,
-                'ap_ip': ap_ip,
+                'ap_ip': ap_ip_clean,
                 'ap_interface': ap_interface,
                 'share_internet': share_internet,
                 'services_file': portal_services_file
             }
             metadata_file = self.CAPTIVE_PORTAL_DIR / "portal_metadata.json"
             metadata_file.write_text(json.dumps(metadata, indent=2))
+            self.log(f"[DEBUG] Saved metadata with ap_ip: '{ap_ip_clean}'", "DEBUG")
             
             # Generate initial splash page HTML
-            html_content = get_captive_portal_html(ap_ip, ssid, services)
+            # CRITICAL FIX: Use ap_ip_clean for HTML generation!
+            self.log(f"[DEBUG] Generating HTML with ap_ip_clean: '{ap_ip_clean}', ssid: '{ssid}'", "DEBUG")
+            html_content = get_captive_portal_html(ap_ip_clean, ssid, services)
+            
+            # VERIFICATION: Check if placeholders were replaced
+            if '{{AP_IP}}' in html_content:
+                self.log("[ERROR] HTML still contains {{AP_IP}} placeholder!", "ERROR")
+                self.log(f"[DEBUG] ap_ip_clean value: '{ap_ip_clean}'", "DEBUG")
+                # Emergency fallback: manually replace
+                html_content = html_content.replace('{{AP_IP}}', ap_ip_clean)
+                html_content = html_content.replace('{{SSID}}', ssid)
+                self.log("[FIX] Applied emergency placeholder replacement", "WARN")
+            
             splash_page = self.CAPTIVE_PORTAL_DIR / "splash.html"
             splash_page.write_text(html_content)
             index_page = self.CAPTIVE_PORTAL_DIR / "index.html"
             index_page.write_text(html_content)
             self.log(f"Created initial portal pages: {splash_page} and {index_page}")
+            
+            # VERIFICATION: Double-check the written files
+            with open(index_page, 'r') as f:
+                check_content = f.read()
+                if '{{AP_IP}}' in check_content:
+                    self.log("[ERROR] index.html STILL contains {{AP_IP}} after writing!", "ERROR")
+                else:
+                    self.log(f"[DEBUG] ✓ index.html verified - no placeholders found", "DEBUG")
             
             # Create SUCCESS page for Android (critical!)
             success_page = self.CAPTIVE_PORTAL_DIR / "success.txt"
@@ -397,7 +425,16 @@ log-dhcp
             (self.CAPTIVE_PORTAL_DIR / "gen_204").write_text("")
             
             # Create captive portal server script with auto-reload
-            server_script = get_portal_server_script(ap_ip, port, self.CAPTIVE_PORTAL_DIR, portal_services_file)
+            # CRITICAL FIX: Use ap_ip_clean for server script!
+            self.log(f"[DEBUG] Creating server script with ap_ip_clean: '{ap_ip_clean}'", "DEBUG")
+            server_script = get_portal_server_script(ap_ip_clean, port, self.CAPTIVE_PORTAL_DIR, portal_services_file)
+            
+            # VERIFICATION: Check server script has correct IP
+            if '{{AP_IP}}' in server_script:
+                self.log("[ERROR] Server script still contains {{AP_IP}} placeholder!", "ERROR")
+                server_script = server_script.replace('{{AP_IP}}', ap_ip_clean)
+                self.log("[FIX] Applied emergency placeholder replacement to server script", "WARN")
+            
             self.CAPTIVE_PORTAL_SCRIPT.write_text(server_script)
             self.CAPTIVE_PORTAL_SCRIPT.chmod(0o755)
             self.log(f"Created portal server with auto-reload: {self.CAPTIVE_PORTAL_SCRIPT}")
@@ -424,7 +461,8 @@ WantedBy=multi-user.target
             
             # Configure iptables to intercept HTTP/HTTPS traffic
             # Skip HTTP redirect if internet sharing is enabled (would break internet access)
-            self.firewall.setup_captive_portal_iptables(ap_interface, ap_ip, skip_http_redirect=share_internet)
+            # CRITICAL FIX: Use ap_ip_clean for iptables!
+            self.firewall.setup_captive_portal_iptables(ap_interface, ap_ip_clean, skip_http_redirect=share_internet)
             
             # Reload systemd and start service
             self.run_command(["systemctl", "daemon-reload"], check=False)
@@ -469,7 +507,7 @@ WantedBy=multi-user.target
             time.sleep(2)
             ret, _, _ = self.run_command(["systemctl", "is-active", "pinetap-portal"], check=False)
             if ret == 0:
-                self.log(f"✓ Captive portal running at http://{ap_ip}:{port}", "SUCCESS")
+                self.log(f"✓ Captive portal running at http://{ap_ip_clean}:{port}", "SUCCESS")
                 self.log(f"  Portal will auto-popup on iOS, Android, Windows devices", "SUCCESS")
                 if portal_services_file:
                     self.log(f"  ⚡ Auto-reload enabled: monitoring {portal_services_file}", "SUCCESS")
@@ -479,7 +517,7 @@ WantedBy=multi-user.target
                 self.log("\n🧪 Testing portal server...", "INFO")
                 ret, stdout, _ = self.run_command([
                     "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                    f"http://{ap_ip}/"
+                    f"http://{ap_ip_clean}/"
                 ], check=False)
                 if ret == 0 and stdout.strip() == "200":
                     self.log("  ✓ Portal responds correctly", "SUCCESS")

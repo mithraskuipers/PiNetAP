@@ -6,6 +6,7 @@ import sys
 import traceback
 import json
 import time
+import re
 from pathlib import Path
 
 PORT = {{PORT}}
@@ -80,20 +81,24 @@ def load_services():
         return [{"name": "Router Admin", "port": 80, "path": "/", "description": "Web interface"}]
 
 def regenerate_portal_html():
-    """Regenerate the portal HTML with current services"""
+    """Regenerate the portal HTML with current services - FIXED REPLACEMENT"""
     try:
         services = CACHED_SERVICES or []
         
         # Read SSID from metadata file if exists
         metadata_path = Path(PORTAL_DIR) / "portal_metadata.json"
         ssid = "PiNetAP"
-        ap_ip = AP_IP
+        ap_ip = AP_IP  # Use the global AP_IP constant
         
         if metadata_path.exists():
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
-                ssid = metadata.get('ssid', ssid)
-                ap_ip = metadata.get('ap_ip', ap_ip)
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    ssid = metadata.get('ssid', ssid)
+                    ap_ip = metadata.get('ap_ip', AP_IP)  # Fallback to global AP_IP
+            except Exception as e:
+                print(f"[HTML] Warning: Failed to read metadata: {e}")
+                # Continue with defaults
         
         # Read the HTML template
         template_path = Path(PORTAL_DIR) / "portal_template.html"
@@ -117,10 +122,25 @@ def regenerate_portal_html():
             </div>
         """
         
-        # Replace ALL placeholders - THIS WAS THE BUG!
-        html = html.replace('{{SSID}}', ssid)
-        html = html.replace('{{AP_IP}}', ap_ip)
-        html = html.replace('{{SERVICE_CARDS}}', service_cards)
+        # CRITICAL FIX: Use regex replacement like in pinetap_portal_template.py
+        replacements = {
+            'SSID': ssid,
+            'AP_IP': ap_ip,
+            'SERVICE_CARDS': service_cards
+        }
+        
+        # Replace using regex to ensure we catch all instances
+        for key, value in replacements.items():
+            # Match {{KEY}} with optional whitespace
+            pattern = r'\{\{\s*' + key + r'\s*\}\}'
+            html = re.sub(pattern, value, html)
+        
+        # Verify replacement worked
+        if '{{AP_IP}}' in html or '{{SSID}}' in html or '{{SERVICE_CARDS}}' in html:
+            print("[HTML] WARNING: Some placeholders were not replaced!")
+            print(f"[HTML] SSID: {ssid}, AP_IP: {ap_ip}")
+        else:
+            print(f"[HTML] ✓ All placeholders replaced successfully")
         
         # Add auto-update indicator to the services header
         html = html.replace('📦 Available Services', '📦 Available Services<span class="auto-update">AUTO-UPDATED</span>')
@@ -140,10 +160,11 @@ def regenerate_portal_html():
             'Services update automatically when services.json changes'
         )
         
-        # Write to index.html
-        index_path = Path(PORTAL_DIR) / "index.html"
-        with open(index_path, 'w', encoding='utf-8') as f:
-            f.write(html)
+        # Write to BOTH index.html AND splash.html for compatibility
+        for filename in ["index.html", "splash.html"]:
+            output_path = Path(PORTAL_DIR) / filename
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(html)
         
         print(f"[HTML] Regenerated portal page with {len(services)} service(s)")
         print(f"[HTML] SSID: {ssid}, AP IP: {ap_ip}")
@@ -300,6 +321,13 @@ if __name__ == "__main__":
             sys.exit(1)
         else:
             print("[STARTUP] index.html found")
+            # Debug: Check if placeholders are still in the file
+            with open("index.html", "r") as f:
+                content = f.read()
+                if "{{AP_IP}}" in content:
+                    print("[ERROR] index.html still contains {{AP_IP}} placeholder!")
+                    print("[ERROR] Running emergency regeneration...")
+                    regenerate_portal_html()
         
         print(f"[STARTUP] Creating server on port {PORT}...")
         with socketserver.TCPServer(("", PORT), CaptivePortalHandler) as httpd:

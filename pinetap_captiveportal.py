@@ -78,8 +78,8 @@ class PiNetAPCaptivePortal(PiNetAPCore):
         Setup a STANDALONE dnsmasq instance that ONLY serves the AP interface.
         This prevents breaking the host's DNS while still providing captive portal DNS.
         
-        CRITICAL FIX: Uses bind-dynamic instead of bind-interfaces to allow dnsmasq
-        to coexist with system DNS resolver without conflicts.
+        CRITICAL FIX: When share_internet=True, we CANNOT use ipv4.method=shared because
+        NetworkManager's dnsmasq conflicts with ours. Instead, we provide DHCP ourselves.
         
         Args:
             ap_interface: The AP interface
@@ -89,8 +89,13 @@ class PiNetAPCaptivePortal(PiNetAPCore):
         try:
             self.log(f"Setting up standalone dnsmasq for {ap_interface}...")
             
+            # For BOTH modes, we need to provide DHCP because:
+            # - NetworkManager's ipv4.method=shared creates its own dnsmasq that conflicts
+            # - We need full control over DNS settings
+            
             if share_internet:
                 # Mode: Captive portal WITH internet access
+                # We provide DHCP + DNS, and forward DNS queries
                 dnsmasq_conf = f"""# [PiNetAP] Standalone dnsmasq for captive portal WITH internet
 # This runs separately from NetworkManager and system DNS
 
@@ -103,9 +108,10 @@ listen-address={ap_ip}
 no-resolv
 no-poll
 
-# Use Google DNS for forwarding
+# Use Google DNS for forwarding (for non-hijacked queries)
 server=8.8.8.8
 server=8.8.4.4
+server=1.1.1.1
 
 # Hijack ONLY captive portal detection domains
 address=/connectivitycheck.android.com/{ap_ip}
@@ -119,7 +125,7 @@ address=/www.msftncsi.com/{ap_ip}
 address=/ipv6.msftconnecttest.com/{ap_ip}
 address=/detectportal.firefox.com/{ap_ip}
 
-# DHCP server for AP clients
+# DHCP server for AP clients (we must provide this ourselves)
 dhcp-range={ap_ip.rsplit('.', 1)[0]}.50,{ap_ip.rsplit('.', 1)[0]}.150,12h
 dhcp-option=option:router,{ap_ip}
 dhcp-option=option:dns-server,{ap_ip}
@@ -131,6 +137,7 @@ log-dhcp
 """
             else:
                 # Mode: Captive portal WITHOUT internet (standalone)
+                # We provide both DNS and DHCP since there's no uplink
                 dnsmasq_conf = f"""# [PiNetAP] Standalone dnsmasq for captive portal WITHOUT internet
 # This runs separately from NetworkManager and system DNS
 
@@ -164,6 +171,11 @@ log-dhcp
             self.PINETAP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             self.STANDALONE_DNSMASQ_CONF.write_text(dnsmasq_conf)
             self.log(f"✓ Created dnsmasq config: {self.STANDALONE_DNSMASQ_CONF}")
+            
+            if share_internet:
+                self.log("  Mode: DNS + DHCP with internet forwarding", "INFO")
+            else:
+                self.log("  Mode: DNS + DHCP (standalone, no internet)", "INFO")
             
             # Create systemd service for standalone dnsmasq
             service_content = f"""[Unit]
@@ -223,6 +235,16 @@ WantedBy=multi-user.target
                     self.log(f"⚠️ Warning: dnsmasq may not be listening on {ap_ip}:53", "WARN")
                     if stdout2:
                         self.log(f"  Current DNS listeners:\n{stdout2}", "DEBUG")
+                
+                # Also check DHCP is listening
+                ret3, stdout3, _ = self.run_command([
+                    "ss", "-lunp", f"sport = :67"
+                ], check=False)
+                
+                if ret3 == 0 and "dnsmasq" in stdout3:
+                    self.log(f"✓ dnsmasq DHCP server active on port 67", "SUCCESS")
+                else:
+                    self.log(f"⚠️ DHCP server may not be running", "WARN")
                 
                 return True
             else:

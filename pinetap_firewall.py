@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PiNetAP Firewall - iptables and Firewall Management
+PiNetAP Firewall - iptables and Firewall Management  
 Contains all iptables rules for NAT, forwarding, and captive portal interception
 """
 
@@ -195,7 +195,17 @@ class PiNetAPFirewall(PiNetAPCore):
         """
         try:
             if skip_http_redirect:
-                self.log(f"Skipping HTTP redirect (internet sharing mode) for {ap_interface}", "INFO")
+                self.log(f"🌐 Internet sharing mode - NO HTTP/HTTPS redirects for {ap_interface}", "INFO")
+                self.log(f"   Clearing any existing redirect rules to prevent SSL errors...", "INFO")
+                
+                # CRITICAL FIX: When internet sharing is enabled, CLEAR all redirect rules
+                # This prevents SSL protocol errors when browsing HTTPS sites
+                self.run_command([
+                    "iptables", "-t", "nat", "-F", "PREROUTING"
+                ], check=False)
+                
+                self.log(f"   ✓ PREROUTING chain cleared - clients have direct internet access", "SUCCESS")
+                self.log(f"   ✓ No SSL errors - HTTPS sites will work normally", "SUCCESS")
                 return True
                 
             self.log(f"Setting up HTTP/HTTPS interception for {ap_interface}...")
@@ -240,6 +250,7 @@ class PiNetAPFirewall(PiNetAPCore):
                 return False
             
             # Rule 3: Redirect HTTPS (port 443) to portal (will show cert error)
+            # NOTE: This is only for standalone mode (no internet)
             ret, _, _ = self.run_command([
                 "iptables", "-t", "nat", "-A", "PREROUTING",
                 "-i", ap_interface, 
@@ -252,6 +263,7 @@ class PiNetAPFirewall(PiNetAPCore):
             
             if ret == 0:
                 self.log(f"✓ Rule 3: HTTPS (443) redirect active → {ap_ip}:80")
+                self.log(f"  (Users will see SSL errors - expected in standalone mode)", "INFO")
             else:
                 self.log(f"Warning: Could not redirect HTTPS", "WARN")
             

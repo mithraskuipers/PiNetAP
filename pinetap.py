@@ -353,7 +353,9 @@ class PiNetAP(PiNetAPNetwork):
             self.log(f"Internet Interface: {internet_interface if internet_interface else 'Auto-detect'}", "INFO")
             
             self.enable_ip_forwarding()
-            ipv4_method = "shared"
+            # CRITICAL: Use 'manual' instead of 'shared' to prevent NetworkManager from
+            # creating its own dnsmasq that conflicts with our standalone dnsmasq
+            ipv4_method = "manual"
             
             # Setup NAT rules
             if not self.setup_nat_rules(ap_interface, internet_interface):
@@ -368,7 +370,8 @@ class PiNetAP(PiNetAPNetwork):
             # For standalone mode: disable forwarding and block forwarding
             self.disable_ip_forwarding()
             self.block_forwarding_except_local(ap_interface)
-            ipv4_method = "shared"  # Still use shared method for DHCP
+            # Use 'manual' method - standalone dnsmasq will provide DHCP
+            ipv4_method = "manual"
             self.log("Configuring for standalone mode (no internet, local network only)", "INFO")
 
         cmd = [
@@ -390,8 +393,8 @@ class PiNetAP(PiNetAPNetwork):
             (["wifi.band", "bg"], "Set band to 2.4GHz"),
             (["wifi.channel", str(channel)], f"Set channel to {channel}"),
             (["wifi.ssid", ssid], f"Explicitly set SSID to {ssid}"),
-            (["ipv4.method", ipv4_method], f"Set IPv4 method to {ipv4_method}"),
-            (["ipv4.address", ip_address], f"Set IP to {ip_address}"),
+            (["ipv4.addresses", ip_address], f"Set IP to {ip_address}"),  # Set addresses FIRST
+            (["ipv4.method", ipv4_method], f"Set IPv4 method to {ipv4_method}"),  # Then set method
             (["ipv6.method", "disabled"], "Disable IPv6"),
             (["wifi.hidden", "false"], "Ensure SSID is broadcast"),
         ]
@@ -498,28 +501,9 @@ class PiNetAP(PiNetAPNetwork):
             if captive_portal:
                 self.log("\n📱 Setting up captive portal...", "INFO")
 
-                # Step 1: Configure DNS FIRST (before portal server)
-                self.log("Step 1/5: Configuring DNS hijacking...")
-                self.configure_captive_portal_dns(ap_interface, ip_address.split('/')[0], share_internet)
-
-                # Step 2: RESTART (not reload) NetworkManager to apply DNS config from dnsmasq-shared.d
-                self.log("Step 2/5: Restarting NetworkManager to apply DNS...")
-                self.run_command(["systemctl", "restart", "NetworkManager"], check=False)
-                time.sleep(3)  # Wait for NetworkManager to fully restart
-
-                # Step 3: Wait for dnsmasq to start
-                self.log("Step 3/5: Waiting for dnsmasq to start...")
-                time.sleep(2)
-
-                # Step 4: Verify dnsmasq is running
-                self.log("Step 4/5: Verifying dnsmasq is active...")
-                if not self.ensure_dnsmasq_active():
-                    self.log("⚠️ dnsmasq may not be active, captive portal detection might fail", "WARN")
-                    self.log("  Try: sudo systemctl restart NetworkManager", "INFO")
-                    # Don't fail here, continue and let user decide
-
-                # Step 5: Setup portal web server
-                self.log("Step 5/5: Starting captive portal web server...")
+                # Step 1: Setup portal web server and standalone DNS
+                # NOTE: We no longer need to restart NetworkManager because we use standalone dnsmasq
+                self.log("Step 1/2: Starting captive portal with standalone DNS...")
                 if self.setup_captive_portal(
                     ip_address.split('/')[0], 
                     ssid, 
@@ -529,6 +513,17 @@ class PiNetAP(PiNetAPNetwork):
                     share_internet=share_internet
                 ):
                     self.log("✓ Captive portal web server active!", "SUCCESS")
+                    
+                    # Step 2: Verify standalone dnsmasq is running
+                    self.log("Step 2/2: Verifying standalone dnsmasq...")
+                    if not self.ensure_dnsmasq_active():
+                        self.log("⚠️ Standalone dnsmasq may not be active", "WARN")
+                        self.log("  Trying to restart it...", "INFO")
+                        self.run_command(["systemctl", "restart", "pinetap-dnsmasq"], check=False)
+                        time.sleep(2)
+                        if not self.ensure_dnsmasq_active():
+                            self.log("⚠️ Captive portal detection might not work properly", "WARN")
+                            self.log("  Try: sudo systemctl restart pinetap-dnsmasq", "INFO")
                     
                     if services_file:
                         self.log("\n⚡ AUTO-RELOAD ENABLED", "SUCCESS")

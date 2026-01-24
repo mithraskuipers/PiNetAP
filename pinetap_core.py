@@ -367,6 +367,30 @@ class PiNetAPCore:
                 return False
         return True
 
+    def remove_dnsmasq_from_nm_config(self) -> bool:
+        """Remove dns=dnsmasq from NetworkManager config to fix host DNS"""
+        try:
+            if not self.NM_CONFIG_PATH.exists():
+                return True
+            
+            content = self.NM_CONFIG_PATH.read_text()
+            
+            # Remove dns=dnsmasq line
+            if "dns=dnsmasq" in content:
+                lines = content.split('\n')
+                lines = [line for line in lines if 'dns=dnsmasq' not in line]
+                content = '\n'.join(lines)
+                self.NM_CONFIG_PATH.write_text(content)
+                self.log("✓ Removed dns=dnsmasq from NetworkManager config")
+                return True
+            else:
+                self.log("NetworkManager config already clean (no dns=dnsmasq)")
+                return True
+                
+        except Exception as e:
+            self.log(f"Failed to clean NetworkManager config: {e}", "ERROR")
+            return False
+
     def modify_nm_config(self, add_dnsmasq: bool = True) -> bool:
         """
         Modify NetworkManager config to use dnsmasq ONLY if needed.

@@ -1112,21 +1112,12 @@ Examples:
         manager.save_original_system_state()
         manager.backup_nm_config()
 
-        # CRITICAL: Only modify NetworkManager to use dnsmasq if captive portal is enabled
-        # Otherwise, NetworkManager's built-in DHCP (shared mode) is sufficient
+        # CRITICAL FIX: We use a STANDALONE dnsmasq service that runs independently
+        # DO NOT modify NetworkManager's config as this breaks the host's DNS
+        # The standalone dnsmasq only binds to the AP interface
         if args.captive_portal:
-            manager.log("🔧 Configuring NetworkManager for captive portal...", "INFO")
-            manager.modify_nm_config(add_dnsmasq=True)
-            manager.manage_dnsmasq_service("disable")
-            manager.reload_networkmanager(delay=3)
-
-            # CRITICAL: Verify dnsmasq is actually running
-            if not manager.ensure_dnsmasq_active():
-                manager.log("⚠️ Warning: dnsmasq not running after NetworkManager reload", "WARN")
-                manager.log("  Captive portal detection may not work properly", "WARN")
-                manager.log("  Try: sudo systemctl restart NetworkManager", "INFO")
-            else:
-                manager.log("✓ NetworkManager configured with dnsmasq for captive portal", "SUCCESS")
+            manager.log("🔧 Captive portal will use standalone dnsmasq service", "INFO")
+            manager.log("  Host DNS will NOT be affected", "INFO")
         else:
             manager.log("Using NetworkManager's built-in DHCP (no dnsmasq needed)")
 

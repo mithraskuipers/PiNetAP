@@ -255,7 +255,7 @@ class PiNetAP(PiNetAPNetwork):
         if uplink_mac:
             self.log(f"Binding uplink to MAC address: {uplink_mac}")
 
-        conn_name = f"{uplink_ssid}-Uplink"
+        conn_name = f"[PiNetAP] {uplink_ssid}-Uplink"
 
         if self.connection_exists(conn_name):
             self.log(f"Removing existing uplink connection: {conn_name}")
@@ -335,7 +335,7 @@ class PiNetAP(PiNetAPNetwork):
             self.log(f"AP Interface MAC address: {ap_mac}")
 
         if not con_name:
-            con_name = f"{ssid}-AP"
+            con_name = f"[PiNetAP] {ssid}-AP"
 
         if self.connection_exists(con_name):
             self.log(f"Removing existing connection '{con_name}' to recreate it")

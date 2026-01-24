@@ -115,7 +115,7 @@ class PiNetAPCaptivePortal(PiNetAPCore):
             if share_internet:
                 # Mode: Captive portal WITH internet access
                 # Only hijack captive portal detection domains, forward everything else
-                captive_dns_conf = f"""# PiNetAP Captive Portal DNS - With Internet Access
+                captive_dns_conf = f"""# [PiNetAP] Captive Portal DNS - With Internet Access
 # Hijack ONLY captive portal detection domains, forward rest to real DNS
 
 # Bind ONLY to the AP interface and its IP
@@ -162,7 +162,7 @@ log-dhcp
             else:
                 # Mode: Captive portal WITHOUT internet (standalone mode)
                 # Hijack ALL DNS queries
-                captive_dns_conf = f"""# PiNetAP Captive Portal DNS - Standalone Mode (No Internet)
+                captive_dns_conf = f"""# [PiNetAP] Captive Portal DNS - Standalone Mode (No Internet)
 # Hijack ALL DNS queries to show portal
 
 # Bind ONLY to the AP interface and its IP
@@ -441,7 +441,7 @@ log-dhcp
             
             # Create systemd service
             service_content = f"""[Unit]
-Description=PiNetAP Captive Portal (Auto-redirect & Auto-reload)
+Description=[PiNetAP] Captive Portal Service (Auto-redirect & Auto-reload)
 After=network.target NetworkManager.service
 
 [Service]

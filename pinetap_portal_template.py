@@ -66,7 +66,7 @@ def get_portal_server_script(ap_ip: str, port: int, portal_dir: Path, services_j
         services_json_path = str(Path(services_json_path).resolve())
     
     # Read the server script template
-    template_path = Path(__file__).parent / "portal_server_template.py"
+    template_path = Path(__file__).parent / "pinetap_portal_server_template.py"
     
     if not template_path.exists():
         raise FileNotFoundError(f"Server template not found: {template_path}")

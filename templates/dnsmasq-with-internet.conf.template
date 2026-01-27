@@ -1,0 +1,38 @@
+# [PiNetAP] Standalone dnsmasq for captive portal WITH internet
+# This runs separately from NetworkManager and system DNS
+
+# CRITICAL: Only listen on AP interface, use bind-dynamic for flexibility
+interface={ap_interface}
+bind-dynamic
+listen-address={ap_ip}
+
+# Don't use system-wide DNS settings
+no-resolv
+no-poll
+
+# Use Google DNS for forwarding (for non-hijacked queries)
+server=8.8.8.8
+server=8.8.4.4
+server=1.1.1.1
+
+# Hijack ONLY captive portal detection domains
+address=/connectivitycheck.android.com/{ap_ip}
+address=/connectivitycheck.gstatic.com/{ap_ip}
+address=/clients3.google.com/{ap_ip}
+address=/clients4.google.com/{ap_ip}
+address=/captive.apple.com/{ap_ip}
+address=/www.apple.com/{ap_ip}
+address=/www.msftconnecttest.com/{ap_ip}
+address=/www.msftncsi.com/{ap_ip}
+address=/ipv6.msftconnecttest.com/{ap_ip}
+address=/detectportal.firefox.com/{ap_ip}
+
+# DHCP server for AP clients (we must provide this ourselves)
+dhcp-range={dhcp_range_start},{dhcp_range_end},12h
+dhcp-option=option:router,{ap_ip}
+dhcp-option=option:dns-server,{ap_ip}
+dhcp-authoritative
+
+# Logging
+log-queries
+log-dhcp

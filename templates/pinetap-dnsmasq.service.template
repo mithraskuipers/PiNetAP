@@ -1,0 +1,16 @@
+[Unit]
+Description=[PiNetAP] Standalone dnsmasq for Captive Portal
+After=network.target NetworkManager.service
+BindsTo=sys-subsystem-net-devices-{ap_interface}.device
+After=sys-subsystem-net-devices-{ap_interface}.device
+
+[Service]
+Type=forking
+ExecStart=/usr/sbin/dnsmasq --conf-file={dnsmasq_conf_path} --pid-file=/run/pinetap-dnsmasq.pid
+ExecReload=/bin/kill -HUP $MAINPID
+PIDFile=/run/pinetap-dnsmasq.pid
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

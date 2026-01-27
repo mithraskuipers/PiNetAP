@@ -5,6 +5,8 @@ Contains captive portal setup, DNS hijacking, and portal server management
 
 FIXED: DNS configuration uses standalone dnsmasq instance that ONLY serves the AP interface
 This prevents breaking the host's DNS resolution while still providing captive portal DNS
+
+REFACTORED: Configuration templates are now read from external .txt files for easier management
 """
 
 import time
@@ -26,6 +28,51 @@ class PiNetAPCaptivePortal(PiNetAPCore):
         # Path for standalone dnsmasq config
         self.STANDALONE_DNSMASQ_CONF = self.PINETAP_CONFIG_DIR / "dnsmasq-captive.conf"
         self.STANDALONE_DNSMASQ_SERVICE = Path("/etc/systemd/system/pinetap-dnsmasq.service")
+        
+        # Template file paths - these should be placed alongside the script or in a templates directory
+        self.TEMPLATE_DIR = Path(__file__).parent / "templates"
+        self.DNSMASQ_WITH_INTERNET_TEMPLATE = self.TEMPLATE_DIR / "dnsmasq-with-internet.conf.template"
+        self.DNSMASQ_NO_INTERNET_TEMPLATE = self.TEMPLATE_DIR / "dnsmasq-no-internet.conf.template"
+        self.DNSMASQ_SERVICE_TEMPLATE = self.TEMPLATE_DIR / "pinetap-dnsmasq.service.template"
+        self.PORTAL_SERVICE_TEMPLATE = self.TEMPLATE_DIR / "pinetap-portal.service.template"
+
+    def _load_template(self, template_path: Path) -> Optional[str]:
+        """Load a template file from disk
+        
+        Args:
+            template_path: Path to the template file
+            
+        Returns:
+            Template content as string, or None if failed
+        """
+        try:
+            if not template_path.exists():
+                self.log(f"Template file not found: {template_path}", "ERROR")
+                return None
+            
+            return template_path.read_text()
+        except Exception as e:
+            self.log(f"Failed to load template {template_path}: {e}", "ERROR")
+            return None
+
+    def _substitute_variables(self, template: str, variables: Dict[str, str]) -> str:
+        """Substitute variables in template using format string
+        
+        Args:
+            template: Template string with {variable} placeholders
+            variables: Dictionary of variable names to values
+            
+        Returns:
+            Template with variables substituted
+        """
+        try:
+            return template.format(**variables)
+        except KeyError as e:
+            self.log(f"Missing variable in template: {e}", "ERROR")
+            raise
+        except Exception as e:
+            self.log(f"Failed to substitute variables: {e}", "ERROR")
+            raise
 
     def verify_dns_hijacking(self, ap_ip: str) -> bool:
         """Verify DNS hijacking is working"""
@@ -89,83 +136,37 @@ class PiNetAPCaptivePortal(PiNetAPCore):
         try:
             self.log(f"Setting up standalone dnsmasq for {ap_interface}...")
             
-            # For BOTH modes, we need to provide DHCP because:
-            # - NetworkManager's ipv4.method=shared creates its own dnsmasq that conflicts
-            # - We need full control over DNS settings
+            # Calculate DHCP range based on AP IP
+            ip_parts = ap_ip.rsplit('.', 1)
+            dhcp_range_start = f"{ip_parts[0]}.50"
+            dhcp_range_end = f"{ip_parts[0]}.150"
             
+            # Prepare variables for template substitution
+            template_vars = {
+                'ap_interface': ap_interface,
+                'ap_ip': ap_ip,
+                'dhcp_range_start': dhcp_range_start,
+                'dhcp_range_end': dhcp_range_end
+            }
+            
+            # Choose and load the appropriate template
             if share_internet:
-                # Mode: Captive portal WITH internet access
-                # We provide DHCP + DNS, and forward DNS queries
-                dnsmasq_conf = f"""# [PiNetAP] Standalone dnsmasq for captive portal WITH internet
-# This runs separately from NetworkManager and system DNS
-
-# CRITICAL: Only listen on AP interface, use bind-dynamic for flexibility
-interface={ap_interface}
-bind-dynamic
-listen-address={ap_ip}
-
-# Don't use system-wide DNS settings
-no-resolv
-no-poll
-
-# Use Google DNS for forwarding (for non-hijacked queries)
-server=8.8.8.8
-server=8.8.4.4
-server=1.1.1.1
-
-# Hijack ONLY captive portal detection domains
-address=/connectivitycheck.android.com/{ap_ip}
-address=/connectivitycheck.gstatic.com/{ap_ip}
-address=/clients3.google.com/{ap_ip}
-address=/clients4.google.com/{ap_ip}
-address=/captive.apple.com/{ap_ip}
-address=/www.apple.com/{ap_ip}
-address=/www.msftconnecttest.com/{ap_ip}
-address=/www.msftncsi.com/{ap_ip}
-address=/ipv6.msftconnecttest.com/{ap_ip}
-address=/detectportal.firefox.com/{ap_ip}
-
-# DHCP server for AP clients (we must provide this ourselves)
-dhcp-range={ap_ip.rsplit('.', 1)[0]}.50,{ap_ip.rsplit('.', 1)[0]}.150,12h
-dhcp-option=option:router,{ap_ip}
-dhcp-option=option:dns-server,{ap_ip}
-dhcp-authoritative
-
-# Logging
-log-queries
-log-dhcp
-"""
+                template = self._load_template(self.DNSMASQ_WITH_INTERNET_TEMPLATE)
+                if template is None:
+                    self.log("Failed to load dnsmasq with internet template", "ERROR")
+                    return False
             else:
-                # Mode: Captive portal WITHOUT internet (standalone)
-                # We provide both DNS and DHCP since there's no uplink
-                dnsmasq_conf = f"""# [PiNetAP] Standalone dnsmasq for captive portal WITHOUT internet
-# This runs separately from NetworkManager and system DNS
-
-# CRITICAL: Only listen on AP interface, use bind-dynamic for flexibility
-interface={ap_interface}
-bind-dynamic
-listen-address={ap_ip}
-
-# Don't forward to upstream DNS - completely isolated
-no-resolv
-no-poll
-
-# Hijack ALL DNS queries from AP clients
-address=/#/{ap_ip}
-
-# DHCP server for AP clients
-dhcp-range={ap_ip.rsplit('.', 1)[0]}.50,{ap_ip.rsplit('.', 1)[0]}.150,12h
-dhcp-option=option:router,{ap_ip}
-dhcp-option=option:dns-server,{ap_ip}
-dhcp-authoritative
-
-# Don't read /etc/hosts
-no-hosts
-
-# Logging
-log-queries
-log-dhcp
-"""
+                template = self._load_template(self.DNSMASQ_NO_INTERNET_TEMPLATE)
+                if template is None:
+                    self.log("Failed to load dnsmasq no internet template", "ERROR")
+                    return False
+            
+            # Substitute variables
+            try:
+                dnsmasq_conf = self._substitute_variables(template, template_vars)
+            except Exception as e:
+                self.log(f"Failed to substitute variables in dnsmasq template: {e}", "ERROR")
+                return False
             
             # Write config
             self.PINETAP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -177,24 +178,22 @@ log-dhcp
             else:
                 self.log("  Mode: DNS + DHCP (standalone, no internet)", "INFO")
             
-            # Create systemd service for standalone dnsmasq
-            service_content = f"""[Unit]
-Description=[PiNetAP] Standalone dnsmasq for Captive Portal
-After=network.target NetworkManager.service
-BindsTo=sys-subsystem-net-devices-{ap_interface}.device
-After=sys-subsystem-net-devices-{ap_interface}.device
-
-[Service]
-Type=forking
-ExecStart=/usr/sbin/dnsmasq --conf-file={self.STANDALONE_DNSMASQ_CONF} --pid-file=/run/pinetap-dnsmasq.pid
-ExecReload=/bin/kill -HUP $MAINPID
-PIDFile=/run/pinetap-dnsmasq.pid
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-"""
+            # Load and substitute systemd service template
+            service_template = self._load_template(self.DNSMASQ_SERVICE_TEMPLATE)
+            if service_template is None:
+                self.log("Failed to load dnsmasq service template", "ERROR")
+                return False
+            
+            service_vars = {
+                'ap_interface': ap_interface,
+                'dnsmasq_conf_path': str(self.STANDALONE_DNSMASQ_CONF)
+            }
+            
+            try:
+                service_content = self._substitute_variables(service_template, service_vars)
+            except Exception as e:
+                self.log(f"Failed to substitute variables in service template: {e}", "ERROR")
+                return False
             
             self.STANDALONE_DNSMASQ_SERVICE.write_text(service_content)
             self.log(f"✓ Created systemd service: {self.STANDALONE_DNSMASQ_SERVICE}")
@@ -370,8 +369,8 @@ WantedBy=multi-user.target
             return None
 
     def setup_captive_portal(self, ap_ip: str, ssid: str, ap_interface: str,
-                           services: Optional[List[Dict]] = None, port: int = 80,
-                           services_file: Optional[str] = None, share_internet: bool = False) -> bool:
+                          services: Optional[List[Dict]] = None, port: int = 80,
+                          services_file: Optional[str] = None, share_internet: bool = False) -> bool:
         """Setup captive portal with enhanced detection for auto-popup
         
         Args:
@@ -474,24 +473,22 @@ WantedBy=multi-user.target
             self.CAPTIVE_PORTAL_SCRIPT.chmod(0o755)
             self.log(f"✓ Created portal server script: {self.CAPTIVE_PORTAL_SCRIPT}")
             
-            # Create systemd service
-            service_content = f"""[Unit]
-Description=[PiNetAP] Captive Portal HTTP Server
-After=network.target pinetap-dnsmasq.service
-BindsTo=sys-subsystem-net-devices-{ap_interface}.device
-After=sys-subsystem-net-devices-{ap_interface}.device
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 {self.CAPTIVE_PORTAL_SCRIPT}
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-"""
+            # Load and substitute portal service template
+            service_template = self._load_template(self.PORTAL_SERVICE_TEMPLATE)
+            if service_template is None:
+                self.log("Failed to load portal service template", "ERROR")
+                return False
+            
+            service_vars = {
+                'ap_interface': ap_interface,
+                'portal_script_path': str(self.CAPTIVE_PORTAL_SCRIPT)
+            }
+            
+            try:
+                service_content = self._substitute_variables(service_template, service_vars)
+            except Exception as e:
+                self.log(f"Failed to substitute variables in portal service template: {e}", "ERROR")
+                return False
             
             self.CAPTIVE_PORTAL_SERVICE.write_text(service_content)
             self.log(f"✓ Created systemd service: {self.CAPTIVE_PORTAL_SERVICE}")

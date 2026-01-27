@@ -1,0 +1,16 @@
+[Unit]
+Description=[PiNetAP] Captive Portal HTTP Server
+After=network.target pinetap-dnsmasq.service
+BindsTo=sys-subsystem-net-devices-{ap_interface}.device
+After=sys-subsystem-net-devices-{ap_interface}.device
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 {portal_script_path}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
